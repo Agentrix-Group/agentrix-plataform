@@ -1,0 +1,11 @@
+DROP TABLE IF EXISTS system_settings;
+DROP TABLE IF EXISTS audit_logs;
+DROP TABLE IF EXISTS replays;
+DROP TABLE IF EXISTS match_participants;
+DROP TABLE IF EXISTS matches;
+DROP TABLE IF EXISTS ladder_entries;
+DROP TABLE IF EXISTS agent_versions;
+DROP TABLE IF EXISTS arenas;
+DROP TABLE IF EXISTS teams;
+DROP TABLE IF EXISTS api_keys;
+DROP TABLE IF EXISTS users;

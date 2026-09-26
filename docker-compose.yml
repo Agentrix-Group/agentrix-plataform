@@ -1,0 +1,74 @@
+# ==============================================================================
+# Agentrix Platform - Production & Development Docker Compose Stack
+# PostgreSQL 16 + Go Monolith Backend & Simulation Runner + React Nginx SPA
+# ==============================================================================
+
+services:
+  db:
+    image: postgres:16-alpine
+    container_name: agentrix-db
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgrespassword
+      POSTGRES_DB: agentrix_platform
+    ports:
+      - "127.0.0.1:5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ./backend/migrations/000001_init_schema.up.sql:/docker-entrypoint-initdb.d/01_init_schema.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d agentrix_platform"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    networks:
+      - agentrix-net
+
+  backend:
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
+    container_name: agentrix-backend
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      PORT: 8080
+      DATABASE_URL: "postgres://postgres:postgrespassword@db:5432/agentrix_platform?sslmode=disable"
+      ARBITER_PATH: "/usr/local/bin/agentrix-arbiter"
+      BOTS_DIR: "/var/agentrix/bots"
+      REPLAYS_DIR: "/var/agentrix/replays"
+      AUTO_MATCHMAKER: "true"
+      MATCH_INTERVAL_SECONDS: 30
+      JWT_SECRET: "agentrix-enterprise-jwt-secret-replace-in-production"
+    ports:
+      - "127.0.0.1:8080:8080"
+    volumes:
+      - agentrix_data:/var/agentrix
+    networks:
+      - agentrix-net
+
+  frontend:
+    build:
+      context: .
+      dockerfile: frontend/Dockerfile
+    container_name: agentrix-frontend
+    restart: unless-stopped
+    depends_on:
+      - backend
+    ports:
+      - "3000:80"
+    networks:
+      - agentrix-net
+
+volumes:
+  pgdata:
+    name: agentrix-pgdata
+  agentrix_data:
+    name: agentrix-data
+
+networks:
+  agentrix-net:
+    name: agentrix-network

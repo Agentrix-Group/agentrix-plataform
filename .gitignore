@@ -1,0 +1,11 @@
+# Binaries & Build artifacts
+backend/bin/
+frontend/dist/
+frontend/node_modules/
+simulation/arbiter/target/
+
+# Local data & logs
+var/agentrix/
+*.log
+.DS_Store
+*.env.local
