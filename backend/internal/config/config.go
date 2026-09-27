@@ -15,6 +15,7 @@ type Config struct {
 	ArbiterPath            string
 	BotsDir                string
 	ReplaysDir             string
+	KitsDir                string
 	RuntimeSHA256          string
 	AutoMatchmaker         bool
 	MatchInterval          int // in seconds
@@ -56,6 +57,7 @@ func Load() (*Config, error) {
 	arbiterPath := getEnv("ARBITER_PATH", "simulation/arbiter/target/release/agentrix-arbiter")
 	botsDir := getEnv("BOTS_DIR", "var/agentrix/bots")
 	replaysDir := getEnv("REPLAYS_DIR", "var/agentrix/replays")
+	kitsDir := getEnv("KITS_DIR", "var/agentrix/artifacts/kits")
 	autoMatchmaker := getEnv("AUTO_MATCHMAKER", "true") == "true"
 	matchInterval, _ := strconv.Atoi(getEnv("MATCH_INTERVAL_SECONDS", "30"))
 	if matchInterval <= 0 {
@@ -69,6 +71,7 @@ func Load() (*Config, error) {
 		ArbiterPath:            arbiterPath,
 		BotsDir:                botsDir,
 		ReplaysDir:             replaysDir,
+		KitsDir:                kitsDir,
 		RuntimeSHA256:          runtimeSHA256,
 		AutoMatchmaker:         autoMatchmaker,
 		MatchInterval:          matchInterval,

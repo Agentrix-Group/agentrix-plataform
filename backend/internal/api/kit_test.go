@@ -1,16 +1,20 @@
 package api
 
 import (
+	"archive/zip"
+	"bytes"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
+	"strings"
 	"testing"
 )
 
 func TestGetArenaKit(t *testing.T) {
 	s, _, _, arenaID, _ := fixtureAPI(t)
 
-	r := httptest.NewRequest(http.MethodGet, "/api/v1/arenas/1/kit", nil)
+	r := httptest.NewRequest(http.MethodGet, "/api/v1/arenas/"+strings.TrimSpace(strconv.Itoa(arenaID))+"/kit", nil)
 	w := httptest.NewRecorder()
 	s.Router().ServeHTTP(w, r)
 
@@ -38,12 +42,87 @@ func TestGetArenaKit(t *testing.T) {
 	if len(manifest.PackageLimits.SupportedRuntimes) < 3 {
 		t.Errorf("expected at least 3 supported runtimes, got %v", manifest.PackageLimits.SupportedRuntimes)
 	}
+	expectedDownloadURL := "/api/v1/arenas/" + strconv.Itoa(arenaID) + "/kit/download"
+	if manifest.StarterKit.DownloadURL != expectedDownloadURL {
+		t.Errorf("expected download URL %s, got %s", expectedDownloadURL, manifest.StarterKit.DownloadURL)
+	}
+	if manifest.StarterKit.Filename == "" {
+		t.Errorf("expected non-empty kit filename")
+	}
 }
 
 func TestGetArenaKitNotFound(t *testing.T) {
 	s, _, _, _, _ := fixtureAPI(t)
 
 	r := httptest.NewRequest(http.MethodGet, "/api/v1/arenas/9999/kit", nil)
+	w := httptest.NewRecorder()
+	s.Router().ServeHTTP(w, r)
+
+	if w.Code != http.StatusNotFound {
+		t.Fatalf("expected 404 Not Found, got %d", w.Code)
+	}
+}
+
+func TestDownloadArenaKit(t *testing.T) {
+	s, _, _, arenaID, _ := fixtureAPI(t)
+
+	r := httptest.NewRequest(http.MethodGet, "/api/v1/arenas/"+strconv.Itoa(arenaID)+"/kit/download", nil)
+	w := httptest.NewRecorder()
+	s.Router().ServeHTTP(w, r)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200 OK, got %d: %s", w.Code, w.Body.String())
+	}
+
+	contentType := w.Header().Get("Content-Type")
+	if contentType != "application/zip" {
+		t.Errorf("expected Content-Type application/zip, got %s", contentType)
+	}
+
+	disp := w.Header().Get("Content-Disposition")
+	if !strings.Contains(disp, "agentrix-starter-kit") {
+		t.Errorf("expected Content-Disposition to reference agentrix-starter-kit, got %s", disp)
+	}
+
+	bodyBytes := w.Body.Bytes()
+	if len(bodyBytes) < 1000 {
+		t.Fatalf("expected kit payload to be at least 1 KB, got %d bytes", len(bodyBytes))
+	}
+
+	// Validate valid ZIP structure
+	zr, err := zip.NewReader(bytes.NewReader(bodyBytes), int64(len(bodyBytes)))
+	if err != nil {
+		t.Fatalf("downloaded payload is not a valid zip archive: %v", err)
+	}
+
+	var foundArbiter, foundSDK, foundMyBot bool
+	for _, f := range zr.File {
+		if strings.Contains(f.Name, "bin/agentrix-arbiter") {
+			foundArbiter = true
+		}
+		if strings.Contains(f.Name, "sdk/agentrix_training") {
+			foundSDK = true
+		}
+		if strings.Contains(f.Name, "my_bot/agent.py") {
+			foundMyBot = true
+		}
+	}
+
+	if !foundArbiter {
+		t.Errorf("zip archive missing bin/agentrix-arbiter")
+	}
+	if !foundSDK {
+		t.Errorf("zip archive missing sdk/agentrix_training")
+	}
+	if !foundMyBot {
+		t.Errorf("zip archive missing my_bot/agent.py")
+	}
+}
+
+func TestDownloadArenaKitNotFound(t *testing.T) {
+	s, _, _, _, _ := fixtureAPI(t)
+
+	r := httptest.NewRequest(http.MethodGet, "/api/v1/arenas/9999/kit/download", nil)
 	w := httptest.NewRecorder()
 	s.Router().ServeHTTP(w, r)
 

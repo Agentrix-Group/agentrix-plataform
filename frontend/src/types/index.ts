@@ -211,6 +211,11 @@ export interface StarterKitInfo {
   cli_tools: string[];
   quickstart: string[];
   guide_url: string;
+  download_url?: string;
+  filename?: string;
+  sha256?: string;
+  size_bytes?: number;
+  colab_url?: string;
 }
 
 export interface ArenaKitManifest {

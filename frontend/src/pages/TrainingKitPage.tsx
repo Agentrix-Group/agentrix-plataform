@@ -17,7 +17,12 @@ import {
   Clock,
   Layers,
   FileCode2,
-  RefreshCw
+  RefreshCw,
+  Download,
+  ExternalLink,
+  Cloud,
+  Laptop,
+  CheckCircle
 } from 'lucide-react';
 import { Arena, ArenaKitManifest } from '../types';
 import { api } from '../api/client';
@@ -49,19 +54,31 @@ export const TrainingKitPage: React.FC<TrainingKitPageProps> = ({ arena, onOpenU
     setTimeout(() => setCopiedIndex(null), 2000);
   };
 
+  const downloadUrl = arena
+    ? `/api/v1/arenas/${arena.id}/kit/download`
+    : '/api/v1/arenas/1/kit/download';
+
+  const colabUrl =
+    manifest?.starter_kit.colab_url ||
+    'https://colab.research.google.com/github/Agentrix-Group/agentrix-plataform/blob/main/notebooks/agentrix_colab_starter.ipynb';
+
+  const formattedSize = manifest?.starter_kit.size_bytes
+    ? `${(manifest.starter_kit.size_bytes / 1024).toFixed(0)} KB`
+    : '~980 KB';
+
   const steps = [
     {
       number: '01',
-      title: 'Compilar el motor oficial (Arbiter)',
-      desc: 'El mismo motor Rust que ejecuta los torneos oficiales en producción se ejecuta localmente sin discrepancias.',
-      cmd: 'cargo build --release -p agentrix-arbiter',
+      title: 'Descargar y descomprimir el Starter Kit Oficial',
+      desc: 'El kit incluye el motor oficial compilado (bin/agentrix-arbiter), el SDK de entrenamiento, plantillas y rivales. No requiere compilar Rust.',
+      cmd: `curl -fsSL -O ${window.location.origin}${downloadUrl}\nunzip agentrix-starter-kit-v0.2.0.zip\ncd agentrix-starter-kit-v0.2.0`,
       id: 'step1',
     },
     {
       number: '02',
       title: 'Instalar el SDK de Entrenamiento',
       desc: 'Instala agentrix-training con soporte para entornos Gymnasium y PettingZoo multi-agente.',
-      cmd: 'python3 -m venv .venv && source .venv/bin/activate\npip install -e sdk/',
+      cmd: 'make setup\n# O manualmente:\npython3 -m venv .venv && source .venv/bin/activate\npip install -r requirements.txt && pip install -e sdk/',
       id: 'step2',
     },
     {
@@ -75,14 +92,14 @@ export const TrainingKitPage: React.FC<TrainingKitPageProps> = ({ arena, onOpenU
       number: '04',
       title: 'Entrenar un agente competitivo',
       desc: 'Entrena una política neuronal con aprendizaje por imitación y búsqueda de políticas sobre datos reales del motor.',
-      cmd: 'agentrix-train --matches 15 --epochs 40 --output-dir bots/mi_bot',
+      cmd: 'agentrix-train --matches 15 --epochs 40 --output-dir my_bot',
       id: 'step4',
     },
     {
       number: '05',
       title: 'Validar y Empaquetar para la Plataforma',
       desc: 'Verifica los 3 ticks de admisión real, valida los límites de tamaño y genera el archivo ZIP listo para subir.',
-      cmd: 'agentrix-pack --bot-dir bots/mi_bot --output bots/mi_bot.zip',
+      cmd: 'agentrix-pack --bot-dir my_bot --output my_bot.zip',
       id: 'step5',
     },
   ];
@@ -122,35 +139,122 @@ export const TrainingKitPage: React.FC<TrainingKitPageProps> = ({ arena, onOpenU
 
   return (
     <div className="space-y-6">
-      {/* Header Banner */}
-      <div className="bg-white border border-slate-200 rounded-xl p-6 shadow-xs flex flex-col md:flex-row md:items-center justify-between gap-4">
-        <div>
-          <div className="flex items-center gap-2 mb-2">
-            <span className="px-2.5 py-0.5 rounded-full text-xs font-bold tracking-wide uppercase bg-blue-100 text-blue-800 border border-blue-200">
-              Starter Kit Oficial
-            </span>
-            <span className="px-2.5 py-0.5 rounded-full text-xs font-mono font-medium bg-slate-100 text-slate-700 border border-slate-200">
-              v0.2.0 • Linux x86_64
-            </span>
+      {/* Primary Starter Kit Hero Banner */}
+      <div className="bg-gradient-to-r from-blue-900 via-slate-900 to-indigo-950 border border-blue-800/40 rounded-2xl p-6 sm:p-8 text-white shadow-lg relative overflow-hidden">
+        <div className="absolute right-0 top-0 translate-x-12 -translate-y-8 w-80 h-80 bg-blue-500/10 rounded-full blur-3xl pointer-events-none" />
+
+        <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-6 relative z-10">
+          <div className="max-w-2xl space-y-3">
+            <div className="flex flex-wrap items-center gap-2">
+              <span className="px-2.5 py-0.5 rounded-full text-xs font-black tracking-wider uppercase bg-blue-500 text-white shadow-xs">
+                Kit Oficial para Participantes
+              </span>
+              <span className="px-2.5 py-0.5 rounded-full text-xs font-mono font-bold bg-white/10 text-blue-200 border border-white/10">
+                v0.2.0 • Linux x86_64
+              </span>
+              <span className="px-2.5 py-0.5 rounded-full text-xs font-mono font-medium bg-emerald-500/20 text-emerald-300 border border-emerald-500/30">
+                {formattedSize}
+              </span>
+            </div>
+
+            <h1 className="text-2xl sm:text-3xl font-black text-white tracking-tight flex items-center gap-3">
+              <Terminal className="w-8 h-8 text-blue-400" />
+              Agentrix AI Starter Kit
+            </h1>
+
+            <p className="text-sm text-slate-300 leading-relaxed">
+              Paquete autónomo con el motor oficial de producción (<code className="text-blue-300 font-mono">agentrix-arbiter</code> a 60 ticks/s precompilado), el SDK de entrenamiento en Python, plantillas listas de bot y 5 rivales de referencia. <strong>No requiere compilar Rust ni clonar el repositorio.</strong>
+            </p>
+
+            {manifest?.starter_kit.sha256 && (
+              <div className="flex items-center gap-2 pt-1 text-xs text-slate-400 font-mono">
+                <span className="text-slate-500">SHA-256:</span>
+                <span className="truncate max-w-[280px] sm:max-w-md bg-black/40 px-2 py-0.5 rounded border border-white/5">
+                  {manifest.starter_kit.sha256}
+                </span>
+                <button
+                  onClick={() => copyToClipboard(manifest.starter_kit.sha256 || '', 'sha')}
+                  className="p-1 hover:text-white transition cursor-pointer"
+                  title="Copiar SHA-256"
+                >
+                  {copiedIndex === 'sha' ? (
+                    <Check className="w-3.5 h-3.5 text-emerald-400" />
+                  ) : (
+                    <Copy className="w-3.5 h-3.5" />
+                  )}
+                </button>
+              </div>
+            )}
           </div>
-          <h1 className="text-2xl font-black text-slate-900 tracking-tight flex items-center gap-2">
-            <Terminal className="w-6 h-6 text-blue-600" />
-            Kit de Entrenamiento & Participación
-          </h1>
-          <p className="text-sm text-slate-600 mt-1 max-w-2xl">
-            Todo lo necesario para entrenar agentes competitivos en tu máquina local o Colab, evaluarlos contra los
-            bots de referencia oficiales y empaquetar tu solución para el torneo.
-          </p>
+
+          <div className="flex flex-col sm:flex-row lg:flex-col gap-3 shrink-0">
+            <a
+              href={downloadUrl}
+              download="agentrix-starter-kit-v0.2.0.zip"
+              className="flex items-center justify-center gap-2.5 px-5 py-3 rounded-xl bg-blue-600 hover:bg-blue-500 text-white font-bold text-sm shadow-md transition transform hover:-translate-y-0.5 active:translate-y-0"
+            >
+              <Download className="w-4 h-4" />
+              Descargar Starter Kit (.zip)
+            </a>
+
+            <a
+              href={colabUrl}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="flex items-center justify-center gap-2.5 px-5 py-3 rounded-xl bg-amber-500/20 hover:bg-amber-500/30 text-amber-200 border border-amber-500/40 font-bold text-sm transition"
+            >
+              <Cloud className="w-4 h-4 text-amber-400" />
+              Abrir en Google Colab
+              <ExternalLink className="w-3.5 h-3.5 ml-0.5 opacity-70" />
+            </a>
+
+            <button
+              onClick={onOpenUpload}
+              className="flex items-center justify-center gap-2.5 px-5 py-2.5 rounded-xl bg-white/10 hover:bg-white/15 text-slate-200 font-semibold text-sm transition cursor-pointer"
+            >
+              <UploadCloud className="w-4 h-4 text-blue-300" />
+              Subir Bot a la Arena
+            </button>
+          </div>
+        </div>
+      </div>
+
+      {/* OS Compatibility Callout */}
+      <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+        <div className="bg-white border border-slate-200 rounded-xl p-4 shadow-xs flex items-start gap-3">
+          <div className="p-2 rounded-lg bg-blue-50 text-blue-600 shrink-0">
+            <Laptop className="w-5 h-5" />
+          </div>
+          <div>
+            <h4 className="text-sm font-bold text-slate-900">Linux x86_64</h4>
+            <p className="text-xs text-slate-600 mt-0.5 leading-relaxed">
+              Compatibilidad 100% nativa directa. Descomprime el kit y entrena localmente en cualquier distribución moderna.
+            </p>
+          </div>
         </div>
 
-        <div className="flex items-center gap-3">
-          <button
-            onClick={onOpenUpload}
-            className="flex items-center gap-2 px-4 py-2.5 rounded-lg bg-blue-600 hover:bg-blue-700 text-white font-semibold text-sm shadow-xs transition cursor-pointer"
-          >
-            <UploadCloud className="w-4 h-4" />
-            Subir Bot a la Arena
-          </button>
+        <div className="bg-white border border-slate-200 rounded-xl p-4 shadow-xs flex items-start gap-3">
+          <div className="p-2 rounded-lg bg-amber-50 text-amber-600 shrink-0">
+            <Cloud className="w-5 h-5" />
+          </div>
+          <div>
+            <h4 className="text-sm font-bold text-slate-900">Google Colab (Recomendado)</h4>
+            <p className="text-xs text-slate-600 mt-0.5 leading-relaxed">
+              Ideal para usuarios de <strong>Windows o Mac</strong>. Entrena en la nube sin configurar entornos locales y descarga tu bot en 1 clic.
+            </p>
+          </div>
+        </div>
+
+        <div className="bg-white border border-slate-200 rounded-xl p-4 shadow-xs flex items-start gap-3">
+          <div className="p-2 rounded-lg bg-purple-50 text-purple-600 shrink-0">
+            <Terminal className="w-5 h-5" />
+          </div>
+          <div>
+            <h4 className="text-sm font-bold text-slate-900">Windows WSL2</h4>
+            <p className="text-xs text-slate-600 mt-0.5 leading-relaxed">
+              Compatible ejecutando Ubuntu dentro de WSL2. El binario corre con la misma paridad estricta de producción.
+            </p>
+          </div>
         </div>
       </div>
 

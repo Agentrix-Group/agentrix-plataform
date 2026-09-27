@@ -40,6 +40,11 @@ fn print_usage() {
 
 fn main() {
     let args: Vec<String> = env::args().collect();
+    if args.contains(&"--version".to_string()) || args.contains(&"-v".to_string()) {
+        println!("agentrix-arbiter 0.2.0 (engine-v1)");
+        return;
+    }
+
     if args.len() >= 2 && (args[1] == "train-env" || args[1] == "--train-env") {
         if let Err(e) = train_env::run_train_env_loop() {
             eprintln!("Train env loop error: {}", e);

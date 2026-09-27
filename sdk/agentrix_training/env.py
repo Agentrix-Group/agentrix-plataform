@@ -57,13 +57,23 @@ def find_arbiter_binary(custom_path: Optional[str] = None) -> str:
     if env_path and os.path.isfile(env_path) and os.access(env_path, os.X_OK):
         return str(Path(env_path).resolve())
 
-    # Candidate locations relative to repo root
+    # Candidate locations relative to starter kit or repo root
     current = Path(__file__).resolve()
-    # current is in sdk/agentrix_training/env.py -> repo root is parents[2]
-    repo_root = current.parents[2]
+    # current is in sdk/agentrix_training/env.py -> root is parents[2]
+    root_dir = current.parents[2]
+    cwd = Path.cwd()
     candidates = [
-        repo_root / "simulation/arbiter/target/release/agentrix-arbiter",
-        repo_root / "simulation/arbiter/target/debug/agentrix-arbiter",
+        # Starter kit structure (bin/agentrix-arbiter)
+        cwd / "bin" / "agentrix-arbiter",
+        cwd / "agentrix-arbiter",
+        cwd.parent / "bin" / "agentrix-arbiter",
+        root_dir / "bin" / "agentrix-arbiter",
+        # Full repository build structure
+        root_dir / "simulation/arbiter/target/release/agentrix-arbiter",
+        root_dir / "simulation/arbiter/target/debug/agentrix-arbiter",
+        # System locations
+        Path("/usr/local/bin/agentrix-arbiter"),
+        Path("/opt/agentrix/bin/agentrix-arbiter"),
     ]
     for cand in candidates:
         if cand.is_file() and os.access(cand, os.X_OK):
@@ -76,8 +86,9 @@ def find_arbiter_binary(custom_path: Optional[str] = None) -> str:
         return which
 
     raise FileNotFoundError(
-        "Could not find agentrix-arbiter binary. Please compile it with 'cargo build --release' "
-        "inside simulation/arbiter or set AGENTRIX_ARBITER_BIN."
+        "Could not find agentrix-arbiter executable binary. Searched starter kit bin/ directory, "
+        "AGENTRIX_ARBITER_BIN, and PATH. Ensure bin/agentrix-arbiter exists in your starter kit "
+        "and has execute permissions (chmod +x bin/agentrix-arbiter)."
     )
 
 
