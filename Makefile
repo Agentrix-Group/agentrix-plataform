@@ -41,9 +41,17 @@ up:
 down:
 	docker compose down
 
-test:
+test-arbiter:
+	@echo "=== Running Rust Arbiter Tests ==="
+	cd simulation/arbiter && cargo test --locked
+
+test-sdk:
+	@echo "=== Running Python SDK Tests ==="
+	.venv/bin/pytest sdk/tests
+
+test: test-arbiter test-sdk
 	@echo "=== Running Go Unit Tests ==="
-	cd backend && go test ./...
+	cd backend && go test ./internal/validation/... ./internal/runner/... ./internal/ladder/... ./internal/api/...
 	@echo "=== Running Frontend Unit Tests ==="
 	cd frontend && npm test
 	@echo "=== Running Operational Script Tests ==="

@@ -56,3 +56,25 @@ def test_gym_single_agent_env():
                 break
     finally:
         env.close()
+
+
+def test_pettingzoo_parallel_api_compliance():
+    """Verify PettingZoo ParallelEnv meets strict official test suite."""
+    from pettingzoo.test import parallel_api_test
+
+    env = AgentrixParallelEnv()
+    try:
+        parallel_api_test(env, num_cycles=15)
+    finally:
+        env.close()
+
+
+def test_gymnasium_check_env_compliance():
+    """Verify Gymnasium single-agent Env meets official check_env specification."""
+    from gymnasium.utils.env_checker import check_env
+
+    env = AgentrixEnv()
+    try:
+        check_env(env.unwrapped if hasattr(env, "unwrapped") else env)
+    finally:
+        env.close()

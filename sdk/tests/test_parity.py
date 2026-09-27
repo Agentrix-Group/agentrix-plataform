@@ -163,15 +163,15 @@ for line in sys.stdin:
 
 
 def test_rapid_reset_stress():
-    """Run 50 rapid resets and short rollouts to verify zero leaks or hangs."""
+    """Run 100+ consecutive episode resets and short rollouts to verify zero leaks or hangs."""
     client = at.ArbiterClient()
     try:
-        for i in range(50):
+        for i in range(100):
             seed = 1000 + i
             resp = client.reset(seed=seed, record_replay=False)
             assert resp["status"] == "ok"
             assert resp["tick"] == 0
-            # Step 3 ticks
+            # Step 3 ticks per episode
             for _ in range(3):
                 actions = [{"angle": 0.0, "shoot": False} for _ in range(5)]
                 s_resp = client.step(actions)

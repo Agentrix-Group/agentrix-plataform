@@ -200,8 +200,8 @@ class AgentrixParallelEnv(ParallelEnv if HAS_PETTINGZOO else object):  # type: i
         if HAS_GYM and spaces is not None:
             self.observation_spaces = {
                 agent: spaces.Box(
-                    low=-np.inf,
-                    high=np.inf,
+                    low=-2.0,
+                    high=2.0,
                     shape=(FEATURE_DIM,),
                     dtype=np.float32,
                 )
@@ -353,6 +353,9 @@ class AgentrixEnv(gym.Env if HAS_GYM else object):  # type: ignore
         config: Optional[Dict[str, Any]] = None,
         learning_seat: int = 0,
     ):
+        if HAS_GYM and hasattr(super(), "__init__"):
+            super().__init__()
+
         self.parallel_env = AgentrixParallelEnv(
             binary_path=binary_path,
             reward_config=reward_config,
@@ -374,8 +377,8 @@ class AgentrixEnv(gym.Env if HAS_GYM else object):  # type: ignore
 
         if HAS_GYM and spaces is not None:
             self.observation_space = spaces.Box(
-                low=-np.inf,
-                high=np.inf,
+                low=-2.0,
+                high=2.0,
                 shape=(FEATURE_DIM,),
                 dtype=np.float32,
             )
@@ -392,6 +395,9 @@ class AgentrixEnv(gym.Env if HAS_GYM else object):  # type: ignore
         seed: Optional[int] = None,
         options: Optional[Dict[str, Any]] = None,
     ) -> Tuple[np.ndarray, Dict[str, Any]]:
+        if HAS_GYM and hasattr(super(), "reset"):
+            super().reset(seed=seed)
+
         for opp in self.opponents:
             opp.reset()
 
