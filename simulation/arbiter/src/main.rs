@@ -5,6 +5,7 @@ mod geometry;
 mod model;
 mod process;
 mod ranking;
+pub mod train_env;
 
 use config::default_models;
 use engine::Engine;
@@ -17,6 +18,8 @@ use std::time::Duration;
 fn print_usage() {
     eprintln!(
         "Uso: agentrix-arbiter [OPCIONES]\n\n\
+         Entorno de Entrenamiento Local:\n\
+           train-env            Inicia bucle JSONL persistente para Gym / PettingZoo\n\n\
          Opciones de Bots:\n\
            --b0 <comando>       Comando para lanzar el Bot 0\n\
            --b1 <comando>       Comando para lanzar el Bot 1\n\
@@ -37,6 +40,14 @@ fn print_usage() {
 
 fn main() {
     let args: Vec<String> = env::args().collect();
+    if args.len() >= 2 && (args[1] == "train-env" || args[1] == "--train-env") {
+        if let Err(e) = train_env::run_train_env_loop() {
+            eprintln!("Train env loop error: {}", e);
+            std::process::exit(1);
+        }
+        return;
+    }
+
     if args.len() < 2 || args.contains(&"--help".to_string()) || args.contains(&"-h".to_string()) {
         print_usage();
         return;

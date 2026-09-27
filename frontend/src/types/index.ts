@@ -184,3 +184,44 @@ export interface ReplayData {
   winner?: string;
   ranking?: any[];
 }
+
+export interface EngineInfo {
+  version: string;
+  rules_version: string;
+  observation_version: string;
+  feature_encoder_version: string;
+  score_version: string;
+  ticks_per_second: number;
+}
+
+export interface PackageLimits {
+  max_zip_bytes: number;
+  max_extracted_bytes: number;
+  max_manifest_bytes: number;
+  max_file_count: number;
+  warmup_timeout_ms: number;
+  tick_timeout_ms: number;
+  memory_limit_bytes: number;
+  cpu_limit: string;
+  supported_runtimes: string[];
+}
+
+export interface StarterKitInfo {
+  python_sdk: string;
+  cli_tools: string[];
+  quickstart: string[];
+  guide_url: string;
+}
+
+export interface ArenaKitManifest {
+  arena_id: number;
+  arena_slug: string;
+  arena_name: string;
+  phase: string;
+  max_players: number;
+  max_ticks: number;
+  engine: EngineInfo;
+  package_limits: PackageLimits;
+  rules: Record<string, any>;
+  starter_kit: StarterKitInfo;
+}

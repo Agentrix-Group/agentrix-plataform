@@ -14,7 +14,8 @@ import {
   UploadCloud,
   Play,
   Cpu,
-  Layers
+  Layers,
+  Terminal
 } from 'lucide-react';
 import { Arena, User } from '../types';
 
@@ -49,6 +50,7 @@ export const Navbar: React.FC<NavbarProps> = ({
     { id: 'leaderboard', label: 'Standings', icon: Trophy },
     { id: 'matches', label: 'Matches', icon: Swords },
     { id: 'bots', label: 'Bots & Ingestion', icon: Bot },
+    { id: 'training', label: 'Entrenar', icon: Terminal },
     { id: 'arenas', label: 'Arenas', icon: Gamepad2 },
     { id: 'teams', label: 'Teams', icon: Users },
     { id: 'audit', label: 'Audit Logs', icon: Activity },

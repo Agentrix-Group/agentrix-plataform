@@ -4,6 +4,7 @@ import { LeaderboardPage } from './pages/LeaderboardPage';
 import { MatchesPage } from './pages/MatchesPage';
 import { MatchDetailPage } from './pages/MatchDetailPage';
 import { BotsPage } from './pages/BotsPage';
+import { TrainingKitPage } from './pages/TrainingKitPage';
 import { ArenasPage } from './pages/ArenasPage';
 import { TeamsPage } from './pages/TeamsPage';
 import { AuditLogsPage } from './pages/AuditLogsPage';
@@ -185,6 +186,13 @@ export const App: React.FC = () => {
             user={user}
             loading={loading}
             onRefresh={refreshData}
+            onOpenUpload={() => setIsUploadOpen(true)}
+          />
+        )}
+
+        {currentTab === 'training' && (
+          <TrainingKitPage
+            arena={selectedArena}
             onOpenUpload={() => setIsUploadOpen(true)}
           />
         )}

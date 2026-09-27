@@ -42,5 +42,16 @@ make up
 | `bash scripts/backup.sh --offline-confirmed` | Crea bundle de BD/artefactos; requiere detener escritores primero. |
 | `bash scripts/restore.sh --recover ...` | Recupera solo a una BD y directorios nuevos; véase BACKUP_RESTORE.md. |
 | `make provision` | Ejecuta rondas de calibración y muestra la tabla de clasificación. |
+| `agentrix-eval` | Ejecuta torneos locales de 5 bots con rotación cíclica de asientos. |
+| `agentrix-train` | Entrena modelos competitivos sobre simulaciones reales del motor Rust. |
+| `agentrix-pack` | Valida límites y admisión local, generando un ZIP listo para someter. |
 
-Para documentación detallada, consulta [PLATFORM_GUIDE.md](PLATFORM_GUIDE.md).
+---
+
+## Entrenamiento y Creación de Bots
+
+Para instalar el SDK oficial en Python (`agentrix-training`), simular partidas con paridad 100% contra el motor Rust, entrenar modelos de IA y evaluar contra los 5 bots de referencia:
+
+👉 **[Consulta la Guía Oficial de Entrenamiento (TRAINING_GUIDE.md)](TRAINING_GUIDE.md)**
+
+Para documentación detallada de la plataforma, consulta [PLATFORM_GUIDE.md](PLATFORM_GUIDE.md).

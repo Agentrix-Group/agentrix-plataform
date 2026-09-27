@@ -90,6 +90,7 @@ func (s *Server) setupRoutes() {
 		// Arenas
 		r.Get("/arenas", s.handleListArenas)
 		r.Get("/arenas/{id}", s.handleGetArena)
+		r.Get("/arenas/{id}/kit", s.handleGetArenaKit)
 		r.Post("/arenas/{id}/freeze", auth.RequireAdmin(s.handleFreezeArena))
 		r.Post("/arenas/{id}/phase", auth.RequireAdmin(s.handleSetArenaPhase))
 		r.Post("/arenas/{id}/rounds", auth.RequireAdmin(s.handleScheduleRound))

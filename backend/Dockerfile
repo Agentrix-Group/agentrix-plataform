@@ -8,8 +8,10 @@
 FROM rust:1.98.1-slim-bookworm AS rust-builder
 WORKDIR /build/arbiter
 COPY simulation/arbiter/Cargo.toml simulation/arbiter/Cargo.lock ./
+COPY simulation/arbiter/.cargo ./.cargo
+COPY simulation/arbiter/vendor ./vendor
 COPY simulation/arbiter/src ./src
-RUN cargo build --release --locked
+RUN cargo build --release --locked --offline
 
 # --- Stage 2: Build Go Monolith Server ---
 FROM golang:1.27.1-bookworm AS go-builder
