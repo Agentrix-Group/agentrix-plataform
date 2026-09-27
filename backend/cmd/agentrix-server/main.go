@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"syscall"
 	"time"
 
@@ -15,6 +16,7 @@ import (
 	"agentrix/backend/internal/db"
 	"agentrix/backend/internal/matchmaker"
 	"agentrix/backend/internal/runner"
+	"agentrix/backend/internal/sandbox"
 )
 
 func main() {
@@ -23,7 +25,37 @@ func main() {
 	log.Println("             Backend Monolith Service             ")
 	log.Println("==================================================")
 
-	cfg := config.Load()
+	for _, arg := range os.Args[1:] {
+		if arg == "--migrate-only" || arg == "-migrate-only" {
+			dbURL := os.Getenv("DATABASE_URL")
+			if dbURL == "" {
+				log.Fatalf("[FATAL] DATABASE_URL is required for migrations")
+			}
+			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+			defer cancel()
+			pool, err := db.Connect(ctx, dbURL)
+			if err != nil {
+				log.Fatalf("[FATAL] Could not connect to database: %v", err)
+			}
+			defer pool.Close()
+			if err := applyAllMigrations(ctx, pool); err != nil {
+				log.Fatalf("[FATAL] %v", err)
+			}
+			log.Println("[MIGRATE] All 8 database migrations successfully applied.")
+			return
+		}
+	}
+
+	cfg, err := config.Load()
+	if err != nil {
+		log.Fatalf("[FATAL] Invalid configuration: %v", err)
+	}
+	preflightCtx, preflightCancel := context.WithTimeout(context.Background(), 25*time.Second)
+	if err := sandbox.ValidateHost(preflightCtx); err != nil {
+		preflightCancel()
+		log.Fatalf("[FATAL] Participant sandbox is not available; refusing to start API/queue: %v", err)
+	}
+	preflightCancel()
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
@@ -35,34 +67,40 @@ func main() {
 	defer pool.Close()
 
 	// 2. Run Database Migrations
-	migrationPath := "backend/migrations/000001_init_schema.up.sql"
-	if _, err := os.Stat(migrationPath); err != nil {
-		migrationPath = "migrations/000001_init_schema.up.sql"
-	}
-	if err := pool.RunMigrations(ctx, migrationPath); err != nil {
-		log.Printf("[WARN] Running migration returned: %v (continuing)", err)
+	if err := applyAllMigrations(ctx, pool); err != nil {
+		log.Fatalf("[FATAL] %v", err)
 	}
 
-	// 3. Auto-seed initial data if empty
-	if err := pool.AutoSeed(ctx); err != nil {
-		log.Printf("[WARN] AutoSeed returned: %v (continuing)", err)
+	// 3. Explicit first-install bootstrap; never create demo accounts or unadmitted bots.
+	if err := pool.Bootstrap(ctx, cfg.BootstrapAdminUsername, cfg.BootstrapAdminEmail, cfg.BootstrapAdminPassword); err != nil {
+		log.Fatalf("[FATAL] Bootstrap failed: %v", err)
 	}
 
-	// 4. Initialize Simulation Runner & Matchmaker
+	// 4. Reconcile old immutable artifacts before workers can claim work.
 	matchRunner := runner.NewMatchRunner(cfg, pool)
+	if removed, err := matchRunner.ReconcileOrphanReplays(ctx, cfg.ReplaysDir); err != nil {
+		log.Fatalf("[FATAL] Replay reconciliation failed: %v", err)
+	} else if removed > 0 {
+		log.Printf("[RUNNER] Removed %d stale unreferenced replay attempt files", removed)
+	}
+
+	// 5. Initialize Simulation Runner & Matchmaker
+	queueDone := make(chan struct{})
+	go func() { defer close(queueDone); matchRunner.RunQueue(ctx) }()
 	mm := matchmaker.NewMatchmaker(cfg, pool, matchRunner)
 	mm.Start(ctx)
 	defer mm.Stop()
 
-	// 5. Initialize API Server
+	// 6. Initialize API Server
 	apiServer := api.NewServer(cfg, pool, matchRunner, mm)
 
 	httpServer := &http.Server{
-		Addr:         fmt.Sprintf(":%s", cfg.Port),
-		Handler:      apiServer.Router(),
-		ReadTimeout:  30 * time.Second,
-		WriteTimeout: 60 * time.Second,
-		IdleTimeout:  120 * time.Second,
+		Addr:              fmt.Sprintf(":%s", cfg.Port),
+		Handler:           apiServer.Router(),
+		ReadTimeout:       300 * time.Second,
+		ReadHeaderTimeout: 10 * time.Second,
+		WriteTimeout:      60 * time.Second,
+		IdleTimeout:       120 * time.Second,
 	}
 
 	go func() {
@@ -78,6 +116,8 @@ func main() {
 	<-quit
 
 	log.Println("[SERVER] Shutting down gracefully...")
+	cancel()
+	<-queueDone
 	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer shutdownCancel()
 
@@ -86,4 +126,53 @@ func main() {
 	}
 
 	log.Println("[SERVER] Agentrix Backend Monolith cleanly stopped.")
+}
+
+func findMigrationsDir() string {
+	if custom := os.Getenv("MIGRATIONS_DIR"); custom != "" {
+		if _, err := os.Stat(filepath.Join(custom, "000001_init_schema.up.sql")); err == nil {
+			return custom
+		}
+	}
+	candidates := []string{
+		"backend/migrations",
+		"migrations",
+	}
+	if exe, err := os.Executable(); err == nil {
+		exeDir := filepath.Dir(exe)
+		candidates = append(candidates,
+			filepath.Join(exeDir, "migrations"),
+			filepath.Join(exeDir, "../migrations"),
+			filepath.Join(exeDir, "../backend/migrations"),
+			filepath.Join(exeDir, "../../backend/migrations"),
+			filepath.Join(exeDir, "../../../backend/migrations"),
+		)
+	}
+	for _, c := range candidates {
+		if _, err := os.Stat(filepath.Join(c, "000001_init_schema.up.sql")); err == nil {
+			return c
+		}
+	}
+	return "migrations"
+}
+
+func applyAllMigrations(ctx context.Context, pool *db.Pool) error {
+	dir := findMigrationsDir()
+	files := []string{
+		"000001_init_schema.up.sql",
+		"000002_match_leases.up.sql",
+		"000003_arena_freeze.up.sql",
+		"000004_package_integrity.up.sql",
+		"000005_tournament_rounds.up.sql",
+		"000006_rules_snapshot.up.sql",
+		"000007_replay_path_index.up.sql",
+		"000008_runtime_provenance.up.sql",
+	}
+	for _, file := range files {
+		path := filepath.Join(dir, file)
+		if err := pool.RunMigrations(ctx, path); err != nil {
+			return fmt.Errorf("migration %s failed: %w", file, err)
+		}
+	}
+	return nil
 }

@@ -1,46 +1,38 @@
 #include <iostream>
 #include <string>
 #include <cmath>
-
-// Parseador JSON ultraligero y rápido para las observaciones mínimas
-// Evita dependencias externas de librerías en C++
+// SDK supplies the checksum-pinned nlohmann/json header via -include.
+using nlohmann::json;
 
 int main() {
     std::ios_base::sync_with_stdio(false);
-    std::cin.tie(NULL);
-
+    std::cin.tie(nullptr);
     std::string line;
     while (std::getline(std::cin, line)) {
-        if (line.empty()) continue;
-
-        if (line.find("\"INIT\"") != std::string::npos) {
-            std::cout << "{\"status\":\"READY\"}\n" << std::flush;
-        } else if (line.find("\"TICK\"") != std::string::npos) {
-            unsigned int tick = 0;
-            size_t tick_idx = line.find("\"tick\":");
-            if (tick_idx != std::string::npos) {
-                sscanf(line.c_str() + tick_idx + 7, "%u", &tick);
+        if (line.size() > 1024 * 1024) return 1;
+        try {
+            const auto message = json::parse(line);
+            const auto phase = message.at("phase").get<std::string>();
+            if (phase == "INIT") {
+                if (message.at("protocol_version").get<int>() != 1) return 1;
+                std::cout << json({{"status", "READY"}}).dump() << '\n' << std::flush;
+            } else if (phase == "TICK") {
+                const auto tick = message.at("tick").get<unsigned int>();
+                const auto& position = message.at("you").at("pos");
+                const auto& center = message.at("zone").at("center");
+                const double dx = center.at(0).get<double>() - position.at(0).get<double>();
+                const double dy = center.at(1).get<double>() - position.at(1).get<double>();
+                const double angle = std::atan2(dy, dx);
+                const bool shoot = !message.at("visible_enemies").empty();
+                std::cout << json({{"tick", tick}, {"angle", angle}, {"shoot", shoot}}).dump()
+                          << '\n' << std::flush;
+            } else if (phase == "TERMINATE") {
+                return 0;
             }
-            // Extraer posición propia "pos":[x, y]
-            float my_x = 600.0f, my_y = 375.0f;
-            size_t pos_idx = line.find("\"pos\":[");
-            if (pos_idx != std::string::npos) {
-                sscanf(line.c_str() + pos_idx + 7, "%f,%f", &my_x, &my_y);
-            }
-
-            // Calcular ángulo hacia el centro del mapa (600, 375)
-            float dx = 600.0f - my_x;
-            float dy = 375.0f - my_y;
-            float angle = std::atan2(dy, dx);
-
-            // Disparar si detecta enemigos visibles
-            bool shoot = (line.find("\"visible_enemies\":[]") == std::string::npos);
-
-            std::cout << "{\"tick\":" << tick << ",\"angle\":" << angle << ",\"shoot\":" << (shoot ? "true" : "false") << "}\n" << std::flush;
-        } else if (line.find("\"TERMINATE\"") != std::string::npos) {
-            break;
+        } catch (const json::exception& error) {
+            std::cerr << "Invalid observation: " << error.what() << '\n';
+            return 1;
         }
     }
-
     return 0;
 }

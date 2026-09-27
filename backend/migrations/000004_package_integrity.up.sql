@@ -1,0 +1,1 @@
+ALTER TABLE agent_versions ADD COLUMN IF NOT EXISTS artifact_sha256 TEXT NOT NULL DEFAULT '';

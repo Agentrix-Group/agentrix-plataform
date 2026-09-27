@@ -1,6 +1,6 @@
 # ==============================================================================
-# Agentrix Platform - Production & Development Docker Compose Stack
-# PostgreSQL 16 + Go Monolith Backend & Simulation Runner + React Nginx SPA
+# Agentrix Platform - Docker Compose development stack
+# Bot execution needs a delegated systemd/cgroup host; backend preflight fails closed without it.
 # ==============================================================================
 
 services:
@@ -10,13 +10,20 @@ services:
     restart: unless-stopped
     environment:
       POSTGRES_USER: postgres
-      POSTGRES_PASSWORD: postgrespassword
+      POSTGRES_PASSWORD: "${POSTGRES_PASSWORD:?Set a private database password}"
       POSTGRES_DB: agentrix_platform
     ports:
-      - "127.0.0.1:5432:5432"
+      - "127.0.0.1:5433:5432"
     volumes:
       - pgdata:/var/lib/postgresql/data
       - ./backend/migrations/000001_init_schema.up.sql:/docker-entrypoint-initdb.d/01_init_schema.sql:ro
+      - ./backend/migrations/000002_match_leases.up.sql:/docker-entrypoint-initdb.d/02_match_leases.sql:ro
+      - ./backend/migrations/000003_arena_freeze.up.sql:/docker-entrypoint-initdb.d/03_arena_freeze.sql:ro
+      - ./backend/migrations/000004_package_integrity.up.sql:/docker-entrypoint-initdb.d/04_package_integrity.sql:ro
+      - ./backend/migrations/000005_tournament_rounds.up.sql:/docker-entrypoint-initdb.d/05_tournament_rounds.sql:ro
+      - ./backend/migrations/000006_rules_snapshot.up.sql:/docker-entrypoint-initdb.d/06_rules_snapshot.sql:ro
+      - ./backend/migrations/000007_replay_path_index.up.sql:/docker-entrypoint-initdb.d/07_replay_path_index.sql:ro
+      - ./backend/migrations/000008_runtime_provenance.up.sql:/docker-entrypoint-initdb.d/08_runtime_provenance.sql:ro
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U postgres -d agentrix_platform"]
       interval: 5s
@@ -36,19 +43,30 @@ services:
         condition: service_healthy
     environment:
       PORT: 8080
-      DATABASE_URL: "postgres://postgres:postgrespassword@db:5432/agentrix_platform?sslmode=disable"
+      DATABASE_URL: "${DATABASE_URL:?Set the PostgreSQL URL using host db and a URL-encoded private password}"
       ARBITER_PATH: "/usr/local/bin/agentrix-arbiter"
       BOTS_DIR: "/var/agentrix/bots"
       REPLAYS_DIR: "/var/agentrix/replays"
       AUTO_MATCHMAKER: "true"
       MATCH_INTERVAL_SECONDS: 30
-      JWT_SECRET: "agentrix-enterprise-jwt-secret-replace-in-production"
+      JWT_SECRET: "${JWT_SECRET:?Set a private random JWT secret of at least 32 bytes}"
+      BOOTSTRAP_ADMIN_USERNAME: "${BOOTSTRAP_ADMIN_USERNAME:-}"
+      BOOTSTRAP_ADMIN_EMAIL: "${BOOTSTRAP_ADMIN_EMAIL:-}"
+      BOOTSTRAP_ADMIN_PASSWORD: "${BOOTSTRAP_ADMIN_PASSWORD:-}"
+      AGENTRIX_DEV_MODE: "${AGENTRIX_DEV_MODE:-true}"
+      AGENTRIX_RUNTIME_SHA256: "${AGENTRIX_RUNTIME_SHA256:-0000000000000000000000000000000000000000000000000000000000000000}"
     ports:
       - "127.0.0.1:8080:8080"
     volumes:
       - agentrix_data:/var/agentrix
     networks:
       - agentrix-net
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:8080/api/v1/system/status | grep -q '\"status\":\"operational\"'"]
+      interval: 10s
+      timeout: 2s
+      retries: 3
+      start_period: 30s
 
   frontend:
     build:
@@ -57,7 +75,8 @@ services:
     container_name: agentrix-frontend
     restart: unless-stopped
     depends_on:
-      - backend
+      backend:
+        condition: service_healthy
     ports:
       - "3000:80"
     networks:

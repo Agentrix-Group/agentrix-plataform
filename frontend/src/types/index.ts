@@ -15,6 +15,7 @@ export interface Team {
 }
 
 export interface Arena {
+	 frozen: boolean;
   id: number;
   slug: string;
   name: string;
@@ -123,6 +124,7 @@ export interface SystemStatus {
 
 // Replay frame types
 export interface UnitState {
+  vision?: number;
   id: number;
   seat: number;
   x: number;
@@ -131,7 +133,7 @@ export interface UnitState {
   hp: number;
   max_hp: number;
   alive: boolean;
-  score: number;
+  score?: number;
   kills: number;
 }
 
@@ -146,11 +148,12 @@ export interface MobState {
 export interface ProjectileState {
   x: number;
   y: number;
-  vx: number;
-  vy: number;
+  vx?: number;
+  vy?: number;
 }
 
 export interface ReplayTickFrame {
+  kill_feed?: string[];
   tick: number;
   units: UnitState[];
   mobs?: MobState[];
@@ -160,15 +163,23 @@ export interface ReplayTickFrame {
 }
 
 export interface ReplayData {
+  event_format?: 'delta-v1';
+  entity_format?: 'keyframe-delta-v1';
+  walls?: { x: number; y: number; w: number; h: number }[];
+  effective_config?: ReplayData['config'];
+  arena?: { width: number; height: number; tick_hz: number };
+  score_version?: string;
+  engine_version?: string;
   config: {
     match_rules: {
       duration: number;
       walls: number;
       zone: boolean;
+      show_vision?: boolean;
     };
   };
   frames?: ReplayTickFrame[];
-  ticks?: ReplayTickFrame[];
+  ticks?: number | ReplayTickFrame[];
   winner?: string;
   ranking?: any[];
 }

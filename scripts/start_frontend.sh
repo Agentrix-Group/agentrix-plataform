@@ -9,8 +9,8 @@ cd "$ROOT_DIR/frontend"
 
 # Ensure dependencies installed
 if [ ! -d "node_modules" ]; then
-    npm install
+    npm ci
 fi
 
 echo "Serving Vite Dev Server on http://localhost:3000..."
-exec npm run dev -- --host 0.0.0.0 --port 3000
+exec npm run dev -- --host 127.0.0.1 --port 3000 --strictPort

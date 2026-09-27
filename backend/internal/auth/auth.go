@@ -62,15 +62,15 @@ func GenerateToken(userID int, username, role, secret string) (string, error) {
 
 func ValidateToken(tokenString, secret string) (*Claims, error) {
 	token, err := jwt.ParseWithClaims(tokenString, &Claims{}, func(token *jwt.Token) (interface{}, error) {
-		if _, ok := token.Method.(*jwt.SigningMethodHMAC); !ok {
+		if token.Method != jwt.SigningMethodHS256 {
 			return nil, errors.New("unexpected signing method")
 		}
 		return []byte(secret), nil
-	})
+	}, jwt.WithValidMethods([]string{"HS256"}), jwt.WithIssuer("agentrix-server"), jwt.WithExpirationRequired())
 	if err != nil {
 		return nil, err
 	}
-	if claims, ok := token.Claims.(*Claims); ok && token.Valid {
+	if claims, ok := token.Claims.(*Claims); ok && token.Valid && claims.UserID > 0 && claims.Username != "" && (claims.Role == "admin" || claims.Role == "player") {
 		return claims, nil
 	}
 	return nil, errors.New("invalid token")

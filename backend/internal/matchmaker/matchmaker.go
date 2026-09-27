@@ -3,8 +3,6 @@ package matchmaker
 import (
 	"context"
 	"log"
-	"math/rand"
-	"sort"
 	"sync"
 	"time"
 
@@ -17,19 +15,26 @@ type Matchmaker struct {
 	cfg        *config.Config
 	pool       *db.Pool
 	runner     *runner.MatchRunner
-	stopCh     chan struct{}
-	wg         sync.WaitGroup
+	lifecycle  sync.Mutex
+	run        *loopRun
+	poll       func(context.Context)
 	activeLock sync.Mutex
-	isRunning  bool
+}
+
+type loopRun struct {
+	cancel   context.CancelFunc
+	done     chan struct{}
+	stopping bool
 }
 
 func NewMatchmaker(cfg *config.Config, pool *db.Pool, r *runner.MatchRunner) *Matchmaker {
-	return &Matchmaker{
+	m := &Matchmaker{
 		cfg:    cfg,
 		pool:   pool,
 		runner: r,
-		stopCh: make(chan struct{}),
 	}
+	m.poll = m.pollAndSchedule
+	return m
 }
 
 func (m *Matchmaker) Start(ctx context.Context) {
@@ -38,142 +43,93 @@ func (m *Matchmaker) Start(ctx context.Context) {
 		return
 	}
 
+	m.lifecycle.Lock()
+	defer m.lifecycle.Unlock()
+	if m.run != nil || ctx.Err() != nil {
+		return
+	}
+	if m.cfg.MatchInterval <= 0 || m.cfg.MatchInterval > 86400 {
+		log.Println("[MATCHMAKER] Refusing scheduling interval outside 1..86400 seconds")
+		return
+	}
+	loopCtx, cancel := context.WithCancel(ctx)
+	run := &loopRun{cancel: cancel, done: make(chan struct{})}
+	m.run = run
 	log.Printf("[MATCHMAKER] Starting continuous ladder matchmaker loop (interval: %ds)...", m.cfg.MatchInterval)
-	m.isRunning = true
-	m.wg.Add(1)
 
 	go func() {
-		defer m.wg.Done()
+		defer func() {
+			cancel()
+			m.lifecycle.Lock()
+			m.run = nil
+			close(run.done)
+			m.lifecycle.Unlock()
+		}()
 		ticker := time.NewTicker(time.Duration(m.cfg.MatchInterval) * time.Second)
 		defer ticker.Stop()
 
 		for {
 			select {
-			case <-m.stopCh:
+			case <-loopCtx.Done():
 				log.Println("[MATCHMAKER] Stopping matchmaker loop...")
 				return
 			case <-ticker.C:
-				m.pollAndSchedule(ctx)
+				if loopCtx.Err() == nil {
+					m.poll(loopCtx)
+				}
 			}
 		}
 	}()
 }
 
 func (m *Matchmaker) Stop() {
-	if m.isRunning {
-		close(m.stopCh)
-		m.wg.Wait()
-		m.isRunning = false
+	m.lifecycle.Lock()
+	run := m.run
+	if run != nil {
+		run.stopping = true
+		run.cancel()
+	}
+	m.lifecycle.Unlock()
+	if run != nil {
+		<-run.done
 	}
 }
 
 func (m *Matchmaker) IsActive() bool {
-	return m.isRunning
-}
-
-type botCandidate struct {
-	ID            int
-	Rating        int
-	MatchesPlayed int
-	LastMatchAt   *time.Time
+	m.lifecycle.Lock()
+	defer m.lifecycle.Unlock()
+	return m.run != nil && !m.run.stopping
 }
 
 func (m *Matchmaker) pollAndSchedule(ctx context.Context) {
 	m.activeLock.Lock()
 	defer m.activeLock.Unlock()
-
-	// 1. Fetch active arenas
-	rows, err := m.pool.Query(ctx, "SELECT id FROM arenas WHERE is_active = true")
+	rows, err := m.pool.Query(ctx, "SELECT id FROM arenas WHERE is_active=true ORDER BY id")
 	if err != nil {
-		log.Printf("[MATCHMAKER] Error querying arenas: %v", err)
+		log.Printf("[MATCHMAKER] arenas: %v", err)
 		return
 	}
-	defer rows.Close()
-
-	var arenaIDs []int
+	var ids []int
 	for rows.Next() {
-		var aid int
-		if err := rows.Scan(&aid); err == nil {
-			arenaIDs = append(arenaIDs, aid)
+		var id int
+		if err := rows.Scan(&id); err != nil {
+			rows.Close()
+			return
 		}
+		ids = append(ids, id)
 	}
+	err = rows.Err()
 	rows.Close()
-
-	for _, arenaID := range arenaIDs {
-		// Fetch eligible active bots for this arena
-		botRows, err := m.pool.Query(ctx, `
-			SELECT av.id, COALESCE(le.display_rating, 1500), COALESCE(le.matches_played, 0), le.last_match_at
-			FROM agent_versions av
-			LEFT JOIN ladder_entries le ON le.arena_id = av.arena_id AND le.agent_version_id = av.id
-			WHERE av.arena_id = $1 AND av.status = 'active'
-			ORDER BY le.last_match_at ASC NULLS FIRST
-		`, arenaID)
-		if err != nil {
-			continue
+	if err != nil {
+		log.Printf("[MATCHMAKER] arenas: %v", err)
+		return
+	}
+	for _, id := range ids {
+		if ctx.Err() != nil {
+			return
 		}
-
-		var candidates []botCandidate
-		for botRows.Next() {
-			var b botCandidate
-			if err := botRows.Scan(&b.ID, &b.Rating, &b.MatchesPlayed, &b.LastMatchAt); err == nil {
-				candidates = append(candidates, b)
-			}
-		}
-		botRows.Close()
-
-		if len(candidates) < 5 {
-			continue // need at least 5 active bots to form a match
-		}
-
-		// Pick the bot that has been waiting the longest as anchor (candidates[0])
-		anchor := candidates[0]
-		remaining := candidates[1:]
-
-		// Sort remaining bots by closeness to anchor rating
-		type distanceCandidate struct {
-			b    botCandidate
-			dist int
-		}
-		var distList []distanceCandidate
-		for _, b := range remaining {
-			d := b.Rating - anchor.Rating
-			if d < 0 {
-				d = -d
-			}
-			distList = append(distList, distanceCandidate{b: b, dist: d})
-		}
-
-		sort.Slice(distList, func(i, j int) bool {
-			return distList[i].dist < distList[j].dist
-		})
-
-		selectedIDs := []int{anchor.ID}
-		for i := 0; i < 4 && i < len(distList); i++ {
-			selectedIDs = append(selectedIDs, distList[i].b.ID)
-		}
-
-		if len(selectedIDs) == 5 {
-			// Randomize seat allocation
-			rand.Shuffle(len(selectedIDs), func(i, j int) {
-				selectedIDs[i], selectedIDs[j] = selectedIDs[j], selectedIDs[i]
-			})
-
-			matchID, err := m.runner.ScheduleMatch(ctx, arenaID, selectedIDs, nil)
-			if err != nil {
-				log.Printf("[MATCHMAKER] Failed to schedule match: %v", err)
-				continue
-			}
-
-			log.Printf("[MATCHMAKER] Auto-scheduled continuous ladder match #%d in arena #%d", matchID, arenaID)
-
-			// Execute asynchronously
-			go func(mid int) {
-				execCtx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
-				defer cancel()
-				if err := m.runner.ExecuteMatch(execCtx, mid); err != nil {
-					log.Printf("[MATCHMAKER] Match #%d execution returned error: %v", mid, err)
-				}
-			}(matchID)
+		if err := m.runner.ScheduleAutomaticRound(ctx, id); err != nil {
+			log.Printf("[MATCHMAKER] round in arena %d: %v", id, err)
 		}
 	}
 }

@@ -6,6 +6,7 @@ of initial qualification and ladder seeding matches.
 """
 
 import argparse
+import getpass
 import json
 import os
 import subprocess
@@ -41,8 +42,13 @@ def main():
     parser.add_argument("--api-url", default=DEFAULT_API_URL, help="URL base de la API REST de Agentrix")
     parser.add_argument("--rounds", type=int, default=2, help="Número de rondas de calibración a ejecutar")
     parser.add_argument("--admin-user", default="admin", help="Usuario administrador")
-    parser.add_argument("--admin-pass", default="admin123", help="Contraseña del administrador")
+    parser.add_argument("--admin-pass", default=None, help="Contraseña privada (preferir AGENTRIX_ADMIN_PASSWORD o prompt para evitar exposición en argv)")
     args = parser.parse_args()
+    args.admin_pass = args.admin_pass or os.environ.get("AGENTRIX_ADMIN_PASSWORD")
+    if not args.admin_pass:
+        if not sys.stdin.isatty():
+            parser.error("Set AGENTRIX_ADMIN_PASSWORD or supply --admin-pass; no default password exists")
+        args.admin_pass = getpass.getpass("Private administrator password: ")
 
     print("==================================================")
     print("      AGENTRIX TOURNAMENT PROVISIONER & CLI       ")

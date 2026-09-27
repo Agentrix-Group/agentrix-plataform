@@ -2,6 +2,7 @@ package validation
 
 import (
 	"archive/zip"
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -12,12 +13,16 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+
+	"agentrix/backend/internal/sandbox"
 )
 
 type BotManifest struct {
-	Name       string `json:"name"`
-	Runtime    string `json:"runtime"`
-	Entrypoint string `json:"entrypoint"`
+	Version         int    `json:"version"`
+	ProtocolVersion int    `json:"protocol_version"`
+	Name            string `json:"name"`
+	Runtime         string `json:"runtime"`
+	Entrypoint      string `json:"entrypoint"`
 }
 
 type ValidationResult struct {
@@ -28,33 +33,49 @@ type ValidationResult struct {
 }
 
 const (
-	MaxZipSize       = 25 * 1024 * 1024  // 25 MB max zip upload
-	MaxExtractedSize = 100 * 1024 * 1024 // 100 MB max extracted content
+	MaxZipSize       = 100 * 1024 * 1024 // 100 MiB of compressed package bytes
+	MaxExtractedSize = 512 * 1024 * 1024 // 512 MiB of expanded package bytes
+	MaxManifestSize  = 16 * 1024
 	MaxFileCount     = 1000
 )
 
 // SafelyExtractZip extracts a zip file to destDir with strict Zip Slip and Zip Bomb prevention.
 func SafelyExtractZip(zipPath, destDir string) error {
+	st, err := os.Stat(zipPath)
+	if err != nil {
+		return err
+	}
+	if st.Size() > MaxZipSize {
+		return errors.New("compressed archive exceeds upload limit")
+	}
 	r, err := zip.OpenReader(zipPath)
 	if err != nil {
 		return fmt.Errorf("failed to open zip file: %w", err)
 	}
 	defer r.Close()
+	if err := validateArchive(r.File); err != nil {
+		return err
+	}
 
 	if err := os.MkdirAll(destDir, 0755); err != nil {
 		return err
 	}
+	root, err := os.Lstat(destDir)
+	if err != nil || !root.IsDir() || root.Mode()&os.ModeSymlink != 0 {
+		return errors.New("extraction destination must be a real directory")
+	}
+	entries, err := os.ReadDir(destDir)
+	if err != nil {
+		return err
+	}
+	if len(entries) != 0 {
+		return errors.New("extraction destination must be empty")
+	}
 
 	cleanDest := filepath.Clean(destDir)
 	var totalSize int64
-	var fileCount int
 
 	for _, f := range r.File {
-		fileCount++
-		if fileCount > MaxFileCount {
-			return errors.New("zip bomb detected: too many files in archive")
-		}
-
 		// Prevent Zip Slip
 		targetPath := filepath.Join(cleanDest, f.Name)
 		cleanTarget := filepath.Clean(targetPath)
@@ -78,7 +99,7 @@ func SafelyExtractZip(zipPath, destDir string) error {
 			return err
 		}
 
-		out, err := os.OpenFile(cleanTarget, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, f.Mode()|0644)
+		out, err := os.OpenFile(cleanTarget, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0644|(f.Mode().Perm()&0111))
 		if err != nil {
 			rc.Close()
 			return err
@@ -86,11 +107,14 @@ func SafelyExtractZip(zipPath, destDir string) error {
 
 		// Enforce MaxExtractedSize
 		written, err := io.Copy(out, io.LimitReader(rc, MaxExtractedSize-totalSize+1))
-		out.Close()
+		closeErr := out.Close()
 		rc.Close()
 
 		if err != nil {
 			return err
+		}
+		if closeErr != nil {
+			return closeErr
 		}
 
 		totalSize += written
@@ -102,99 +126,151 @@ func SafelyExtractZip(zipPath, destDir string) error {
 	return nil
 }
 
-// InspectBotDirectory parses the manifest or infers reasonable defaults.
-func InspectBotDirectory(botDir string) (BotManifest, error) {
-	manifestPath := filepath.Join(botDir, "agentrix.json")
-	if data, err := os.ReadFile(manifestPath); err == nil {
-		var manifest BotManifest
-		if err := json.Unmarshal(data, &manifest); err == nil && manifest.Entrypoint != "" {
-			if manifest.Runtime == "" {
-				manifest.Runtime = "python-standard"
+// Preflight every central-directory entry before writing any expanded bytes.
+func validateArchive(files []*zip.File) error {
+	if len(files) == 0 || len(files) > MaxFileCount {
+		return errors.New("archive entry count outside quota")
+	}
+	seen := map[string]bool{}
+	nodes := map[string]bool{}
+	var total uint64
+	for _, f := range files {
+		name := strings.TrimSuffix(f.Name, "/")
+		if name == "" || len(name) > 1024 || strings.ContainsAny(name, "\\\x00") || filepath.IsAbs(name) || filepath.Clean(name) != name || name == ".." || strings.HasPrefix(name, "../") {
+			return fmt.Errorf("noncanonical archive path: %q", name)
+		}
+		if seen[name] {
+			return fmt.Errorf("duplicate archive path: %q", name)
+		}
+		seen[name] = true
+		for node := name; node != "."; node = filepath.Dir(node) {
+			nodes[node] = true
+			if len(nodes) > MaxFileCount {
+				return errors.New("archive paths exceed expanded entry quota")
 			}
-			return manifest, nil
+		}
+		if !f.FileInfo().IsDir() && !f.Mode().IsRegular() {
+			return errors.New("archive contains special file")
+		}
+		if f.UncompressedSize64 > MaxExtractedSize-total {
+			return errors.New("declared expanded package exceeds quota")
+		}
+		total += f.UncompressedSize64
+		if f.UncompressedSize64 > 1024*1024 && f.UncompressedSize64/(f.CompressedSize64+1) > 200 {
+			return errors.New("archive compression ratio exceeds quota")
 		}
 	}
-
-	// Fallback 1: run.sh
-	if _, err := os.Stat(filepath.Join(botDir, "run.sh")); err == nil {
-		os.Chmod(filepath.Join(botDir, "run.sh"), 0755)
-		return BotManifest{
-			Name:       filepath.Base(botDir),
-			Runtime:    "binary",
-			Entrypoint: "./run.sh",
-		}, nil
-	}
-
-	// Fallback 2: agent.py
-	if _, err := os.Stat(filepath.Join(botDir, "agent.py")); err == nil {
-		return BotManifest{
-			Name:       filepath.Base(botDir),
-			Runtime:    "python-standard",
-			Entrypoint: "python3 agent.py",
-		}, nil
-	}
-
-	// Fallback 3: main.py
-	if _, err := os.Stat(filepath.Join(botDir, "main.py")); err == nil {
-		return BotManifest{
-			Name:       filepath.Base(botDir),
-			Runtime:    "python-standard",
-			Entrypoint: "python3 main.py",
-		}, nil
-	}
-
-	return BotManifest{}, errors.New("no valid entrypoint found (must contain agentrix.json, run.sh, agent.py or main.py)")
+	return nil
 }
 
-// TestBotProtocol runs a 3-second protocol test to verify the bot can boot and communicate.
-func TestBotProtocol(botDir string, manifest BotManifest) error {
-	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
-	defer cancel()
-
-	parts := strings.Fields(manifest.Entrypoint)
-	if len(parts) == 0 {
-		return errors.New("empty entrypoint")
+// InspectBotDirectory requires the versioned package contract; no inferred
+// commands, runtimes, or protocol versions may differ between admission/matches.
+func InspectBotDirectory(botDir string) (BotManifest, error) {
+	manifestPath := filepath.Join(botDir, "agentrix.json")
+	f, err := os.Open(manifestPath)
+	if err != nil {
+		return BotManifest{}, errors.New("agentrix.json is required")
 	}
+	defer f.Close()
+	data, err := io.ReadAll(io.LimitReader(f, MaxManifestSize+1))
+	if err != nil {
+		return BotManifest{}, err
+	}
+	if len(data) > MaxManifestSize {
+		return BotManifest{}, errors.New("manifest exceeds quota")
+	}
+	var manifest BotManifest
+	decoder := json.NewDecoder(bytes.NewReader(data))
+	decoder.DisallowUnknownFields()
+	if decoder.Decode(&manifest) != nil {
+		return BotManifest{}, errors.New("invalid agentrix.json")
+	}
+	var trailing interface{}
+	if decoder.Decode(&trailing) != io.EOF {
+		return BotManifest{}, errors.New("trailing manifest content")
+	}
+	if manifest.Version != 1 || manifest.ProtocolVersion != 1 || strings.TrimSpace(manifest.Name) == "" || len(manifest.Name) > 128 {
+		return BotManifest{}, errors.New("manifest version, protocol_version and name required")
+	}
+	switch manifest.Runtime {
+	case "python-standard", "python-onnx", "binary":
+	default:
+		return BotManifest{}, errors.New("unsupported manifest runtime")
+	}
+	if err := validateEntrypoint(botDir, manifest.Entrypoint); err != nil {
+		return BotManifest{}, err
+	}
+	if manifest.Runtime != "binary" && !strings.HasPrefix(manifest.Entrypoint, "python3 ") {
+		return BotManifest{}, errors.New("Python runtime requires python3 script entrypoint")
+	}
+	return manifest, nil
+}
 
-	cmd := exec.CommandContext(ctx, parts[0], parts[1:]...)
-	cmd.Dir = botDir
+func validateEntrypoint(botDir, entrypoint string) error {
+	parts := strings.Fields(entrypoint)
+	if len(parts) == 0 || len(parts) > 2 {
+		return errors.New("entrypoint must be a local executable or python3 script")
+	}
+	file := parts[0]
+	if len(parts) == 1 && !strings.HasPrefix(file, "./") {
+		return errors.New("executable entrypoint must start with ./")
+	}
+	if len(parts) == 2 {
+		if parts[0] != "python3" {
+			return errors.New("only python3 accepts a script argument")
+		}
+		file = parts[1]
+	}
+	file = strings.TrimPrefix(file, "./")
+	if filepath.IsAbs(file) || filepath.Clean(file) != file || file == ".." || strings.HasPrefix(file, "../") {
+		return errors.New("entrypoint must stay inside the package")
+	}
+	st, err := os.Lstat(filepath.Join(botDir, file))
+	if err != nil || !st.Mode().IsRegular() {
+		return errors.New("entrypoint must be a regular package file")
+	}
+	if len(parts) == 1 && st.Mode().Perm()&0111 == 0 {
+		return errors.New("executable entrypoint must have execute permission")
+	}
+	return nil
+}
 
-	stdin, err := cmd.StdinPipe()
+// TestBotProtocol executes the actual arbiter admission mode with the same
+// sandbox launcher used for matches. Missing infrastructure fails closed.
+func TestBotProtocol(botDir string, manifest BotManifest, arbiterPath string) error {
+	if err := validateEntrypoint(botDir, manifest.Entrypoint); err != nil {
+		return err
+	}
+	parts, err := sandbox.Command(botDir, manifest.Entrypoint)
 	if err != nil {
 		return err
 	}
-	defer stdin.Close()
-
-	if err := cmd.Start(); err != nil {
-		return fmt.Errorf("failed to start bot process: %w", err)
+	defer sandbox.Stop(parts)
+	for i, arg := range parts {
+		parts[i] = "'" + strings.ReplaceAll(arg, "'", "'\"'\"'") + "'"
 	}
-
-	// Send warmup protocol payload
-	warmupPayload := `{"type": "WARMUP", "player_id": 0}` + "\n"
-	_, _ = stdin.Write([]byte(warmupPayload))
-
-	// Allow process to initialize or report errors
-	done := make(chan error, 1)
-	go func() {
-		// Wait a small moment for warmup
-		time.Sleep(500 * time.Millisecond)
-		if cmd.ProcessState != nil && cmd.ProcessState.Exited() && !cmd.ProcessState.Success() {
-			done <- fmt.Errorf("bot process exited with code %d", cmd.ProcessState.ExitCode())
-			return
-		}
-		done <- nil
-	}()
-
-	select {
-	case <-ctx.Done():
-		if cmd.Process != nil {
-			_ = cmd.Process.Kill()
-		}
-		return errors.New("bot validation timed out (took longer than 3s)")
-	case err := <-done:
-		if cmd.Process != nil {
-			_ = cmd.Process.Kill()
-		}
+	command := strings.Join(parts, " ")
+	arbiter, err := filepath.Abs(arbiterPath)
+	if err != nil {
 		return err
 	}
+	ctx, cancel := context.WithTimeout(context.Background(), 12*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, arbiter, "--admit", "--b0", command)
+	cmd.Env = []string{"PATH=" + os.Getenv("PATH"), "XDG_RUNTIME_DIR=" + os.Getenv("XDG_RUNTIME_DIR")}
+	var output bytes.Buffer
+	cmd.Stdout = &output
+	// Participant stderr is discarded by the arbiter, never mixed with JSON.
+	if err := cmd.Run(); err != nil {
+		return fmt.Errorf("arbiter admission failed: %w", err)
+	}
+	var receipt struct {
+		Status          string `json:"status"`
+		ProtocolVersion int    `json:"protocol_version"`
+		ValidatedTicks  int    `json:"validated_ticks"`
+	}
+	if err := json.Unmarshal(output.Bytes(), &receipt); err != nil || receipt.Status != "ADMITTED" || receipt.ProtocolVersion != 1 || receipt.ValidatedTicks != 3 {
+		return errors.New("invalid arbiter admission receipt")
+	}
+	return nil
 }

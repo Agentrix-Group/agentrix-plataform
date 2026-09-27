@@ -59,17 +59,19 @@ export const App: React.FC = () => {
     setLoading(true);
 
     try {
-      const [ladderRes, matchesRes, agentsRes, teamsRes] = await Promise.all([
+      const [ladderRes, matchesRes, agentsRes, teamsRes, arenasRes] = await Promise.all([
         api.getLadder(selectedArenaId),
         api.getMatches(selectedArenaId),
         api.getAgents(selectedArenaId),
         api.getTeams(),
+        api.getArenas(),
       ]);
 
       setLadder(ladderRes || []);
       setMatches(matchesRes || []);
       setAgents(agentsRes || []);
       setTeams(teamsRes || []);
+	  setArenas(arenasRes || []);
 
       if (currentTab === 'audit') {
         const logsRes = await api.getAuditLogs();
@@ -85,7 +87,7 @@ export const App: React.FC = () => {
     } finally {
       setLoading(false);
     }
-  }, [selectedArenaId, currentTab]);
+  }, [selectedArenaId, currentTab, user]);
 
   useEffect(() => {
     refreshData();
@@ -116,7 +118,7 @@ export const App: React.FC = () => {
   const selectedArena = arenas.find((a) => a.id === selectedArenaId) || null;
 
   return (
-    <div className="min-h-screen bg-slate-950 text-slate-100 flex flex-col font-sans">
+    <div className="min-h-screen bg-slate-100/70 text-slate-900 flex flex-col font-sans">
       {/* Top Navbar */}
       <Navbar
         currentTab={currentTab}
@@ -134,6 +136,8 @@ export const App: React.FC = () => {
         onLogout={() => {
           api.logout();
           setUser(null);
+          setLadder([]); setMatches([]); setAuditLogs([]);
+          setSelectedMatchId(null); setCurrentTab('leaderboard');
         }}
         matchmakerActive={systemStatus?.matchmaker_active ?? false}
       />
@@ -153,6 +157,8 @@ export const App: React.FC = () => {
 
         {currentTab === 'matches' && (
           <MatchesPage
+            key={`${selectedArenaId}-${user?.id ?? 'public'}-${user?.role ?? 'public'}-${selectedArena?.frozen ?? false}`}
+            arenaId={selectedArenaId}
             matches={matches}
             arenas={arenas}
             loading={loading}
@@ -165,6 +171,7 @@ export const App: React.FC = () => {
 
         {currentTab === 'match-detail' && selectedMatchId && (
           <MatchDetailPage
+            key={`${user?.id ?? 'public'}-${user?.role ?? 'public'}-${selectedArena?.frozen ?? false}`}
             matchId={selectedMatchId}
             onBack={() => setCurrentTab('matches')}
             onRerun={handleRerunMatch}
@@ -182,7 +189,7 @@ export const App: React.FC = () => {
           />
         )}
 
-        {currentTab === 'arenas' && <ArenasPage arenas={arenas} />}
+        {currentTab === 'arenas' && <ArenasPage arenas={arenas} canFreeze={user?.role === 'admin'} onFreeze={async (id, frozen) => { await api.setArenaFreeze(id, frozen); await refreshData(); }} />}
 
         {currentTab === 'teams' && <TeamsPage teams={teams} />}
 
@@ -204,17 +211,17 @@ export const App: React.FC = () => {
       </main>
 
       {/* Footer */}
-      <footer className="bg-slate-900/60 border-t border-slate-800/80 py-4 text-xs text-slate-500">
+      <footer className="bg-white border-t border-slate-200 py-4 text-xs text-slate-500 shadow-2xs">
         <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 flex flex-col sm:flex-row items-center justify-between gap-2">
           <div className="flex items-center gap-2">
-            <Cpu className="w-4 h-4 text-sky-400" />
-            <span className="font-semibold text-slate-400">Agentrix Platform</span>
-            <span>• Multi-Agent Continuous Ladder</span>
+            <Cpu className="w-4 h-4 text-blue-600" />
+            <span className="font-bold text-slate-700">Agentrix Arena Platform</span>
+            <span className="text-slate-400">• Multi-Agent Continuous Benchmark Ladder</span>
           </div>
           <div className="flex items-center gap-4 text-[11px] font-mono text-slate-500">
-            <span>Rust Arbiter v1.0</span>
-            <span>Go Monolith API</span>
-            <span>React + TypeScript SPA</span>
+            <span className="px-2 py-0.5 rounded bg-slate-100 border border-slate-200 text-slate-700 font-semibold">Rust Arbiter v1.0</span>
+            <span className="px-2 py-0.5 rounded bg-slate-100 border border-slate-200 text-slate-700 font-semibold">Go Monolith API</span>
+            <span className="px-2 py-0.5 rounded bg-slate-100 border border-slate-200 text-slate-700 font-semibold">React + TypeScript SPA</span>
           </div>
         </div>
       </footer>

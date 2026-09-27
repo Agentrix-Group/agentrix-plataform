@@ -1,4 +1,5 @@
 import React, { useEffect, useRef, useState, useCallback } from 'react';
+import { drawReplayLayers } from '../api/replayLayers';
 import {
   Play,
   Pause,
@@ -30,7 +31,7 @@ export const ReplayViewer2D: React.FC<ReplayViewer2DProps> = ({ replayData, matc
   const containerRef = useRef<HTMLDivElement | null>(null);
 
   // Extract frames
-  const frames: ReplayTickFrame[] = replayData.frames || replayData.ticks || [];
+  const frames: ReplayTickFrame[] = replayData.frames || (Array.isArray(replayData.ticks) ? replayData.ticks : []);
   const totalTicks = frames.length > 0 ? frames.length - 1 : 1;
 
   const [currentTick, setCurrentTick] = useState<number>(0);
@@ -84,19 +85,11 @@ export const ReplayViewer2D: React.FC<ReplayViewer2DProps> = ({ replayData, matc
       }
 
       const frame = frames[tickIdx];
-      const scaleX = width / 1000.0;
-      const scaleY = height / 1000.0;
+      const scaleX = width / (replayData.arena?.width ?? 1200);
+      const scaleY = height / (replayData.arena?.height ?? 750);
 
       // 3. Draw Closing Storm Zone
-      const zoneRadius = frame.zone_radius !== undefined ? frame.zone_radius * scaleX : 460 * scaleX;
-      ctx.save();
-      ctx.strokeStyle = '#f43f5e';
-      ctx.lineWidth = 2;
-      ctx.setLineDash([6, 4]);
-      ctx.beginPath();
-      ctx.arc(width / 2, height / 2, Math.max(10, zoneRadius), 0, Math.PI * 2);
-      ctx.stroke();
-      ctx.restore();
+      drawReplayLayers(ctx, replayData, frame, width, height);
 
       // 4. Draw Projectiles
       if (frame.projectiles) {
@@ -176,11 +169,9 @@ export const ReplayViewer2D: React.FC<ReplayViewer2DProps> = ({ replayData, matc
       }
 
       // 7. Update Kill Feed
-      if (frame.events && frame.events.length > 0) {
-        setKillFeed((prev) => [...prev, ...frame.events!].slice(-6));
-      }
+      setKillFeed(frame.kill_feed ?? frame.events?.slice(-6) ?? []);
     },
-    [frames]
+    [frames, replayData]
   );
 
   // Playback Loop
@@ -252,62 +243,112 @@ export const ReplayViewer2D: React.FC<ReplayViewer2DProps> = ({ replayData, matc
     setCurrentTick(0);
   };
 
+  const currentFrame = frames[currentTick] || null;
+  const currentUnits = currentFrame?.units || [];
+
   return (
-    <div ref={containerRef} className="bg-slate-900 border border-slate-800 rounded-lg overflow-hidden shadow-2xl">
+    <div ref={containerRef} className="bg-white border-2 border-slate-200/90 rounded-2xl overflow-hidden shadow-md space-y-0">
       {/* Top Banner with Match Meta & Live Killfeed */}
-      <div className="flex items-center justify-between px-4 py-2.5 bg-slate-950/80 border-b border-slate-800 text-xs">
+      <div className="flex flex-wrap items-center justify-between px-5 py-3 bg-slate-50 border-b border-slate-200 text-xs">
         <div className="flex items-center gap-4">
           <div className="flex items-center gap-2">
-            <span className="font-semibold text-slate-200">Replay Viewer</span>
-            <span className="font-mono text-sky-400">#Match-{matchId}</span>
+            <span className="font-extrabold text-slate-800 text-sm">Arena Simulation</span>
+            <span className="font-mono text-blue-700 bg-blue-50 border border-blue-200 px-2 py-0.5 rounded-full font-bold">
+              Match #{matchId}
+            </span>
           </div>
 
-          <div className="h-3 w-px bg-slate-800" />
+          <div className="h-4 w-px bg-slate-300 hidden sm:block" />
 
           {/* Seat Color Legends */}
-          <div className="hidden sm:flex items-center gap-3 text-[11px] font-mono">
+          <div className="hidden sm:flex items-center gap-3 text-xs font-mono font-bold">
             {SEAT_COLORS.map((color, idx) => (
-              <div key={idx} className="flex items-center gap-1">
-                <span className="w-2.5 h-2.5 rounded-full" style={{ backgroundColor: color }} />
-                <span className="text-slate-400">P{idx}</span>
+              <div key={idx} className="flex items-center gap-1.5 px-2 py-0.5 rounded-md bg-white border border-slate-200 shadow-2xs">
+                <span className="w-2.5 h-2.5 rounded-full shadow-xs" style={{ backgroundColor: color }} />
+                <span className="text-slate-700">Seat {idx}</span>
               </div>
             ))}
           </div>
         </div>
 
         {/* Current Tick & Time indicator */}
-        <div className="font-mono text-[11px] text-slate-400">
-          Tick: <span className="text-sky-400 font-semibold">{currentTick}</span> / {totalTicks}
-          <span className="text-slate-600 ml-1.5">({((currentTick * 50) / 1000).toFixed(1)}s)</span>
+        <div className="font-mono text-xs font-bold text-slate-600 bg-white border border-slate-200 px-3 py-1 rounded-lg shadow-2xs">
+          Tick: <span className="text-blue-600 font-extrabold">{currentTick}</span> / {totalTicks}
+          <span className="text-slate-400 font-medium ml-1.5">({((currentTick * 50) / 1000).toFixed(1)}s)</span>
         </div>
       </div>
 
       {/* Main 2D Canvas Stage */}
-      <div className="relative aspect-video w-full bg-slate-950 flex items-center justify-center overflow-hidden">
+      <div style={{ aspectRatio: `${replayData.arena?.width ?? 1200} / ${replayData.arena?.height ?? 750}` }} className="relative w-full bg-[#0a1128] flex items-center justify-center overflow-hidden">
         <canvas
           ref={canvasRef}
           width={800}
-          height={450}
+          height={Math.round(800 * (replayData.arena?.height ?? 750) / (replayData.arena?.width ?? 1200))}
           className="w-full h-full object-contain cursor-crosshair"
         />
 
         {/* Floating Kill Feed overlay */}
         {killFeed.length > 0 && (
-          <div className="absolute top-3 right-3 pointer-events-none space-y-1 text-right max-w-xs">
+          <div className="absolute top-4 right-4 pointer-events-none space-y-1.5 text-right max-w-sm">
             {killFeed.map((evt, idx) => (
               <div
                 key={idx}
-                className="inline-block px-2.5 py-1 rounded bg-slate-900/90 border border-slate-700/80 text-[10px] font-mono text-slate-200 shadow-md backdrop-blur-sm"
+                className="inline-block px-3 py-1.5 rounded-lg bg-white/95 border border-slate-300/80 text-xs font-bold text-slate-900 shadow-lg backdrop-blur-md animate-fade-in"
               >
-                {evt}
+                ⚔ {evt}
               </div>
             ))}
           </div>
         )}
       </div>
 
+      {/* Live Participant Status HUD Strip */}
+      <div className="px-5 py-3 bg-slate-50 border-t border-b border-slate-200">
+        <div className="grid grid-cols-2 sm:grid-cols-5 gap-2.5">
+          {SEAT_COLORS.map((color, seatIdx) => {
+            const unit = currentUnits.find((u) => u.seat === seatIdx);
+            const isAlive = unit ? unit.alive : true;
+            const maxHp = unit?.max_hp || 100;
+            const hp = unit ? unit.hp : 100;
+            const hpPct = Math.max(0, Math.min(100, (hp / maxHp) * 100));
+
+            return (
+              <div
+                key={seatIdx}
+                className={`p-2.5 rounded-xl border transition-all ${
+                  isAlive
+                    ? 'bg-white border-slate-200/90 shadow-2xs'
+                    : 'bg-slate-100 border-slate-200/60 opacity-60'
+                }`}
+              >
+                <div className="flex items-center justify-between text-xs font-mono mb-1.5">
+                  <div className="flex items-center gap-1.5">
+                    <span className="w-2.5 h-2.5 rounded-full" style={{ backgroundColor: color }} />
+                    <span className="font-extrabold text-slate-800">Seat {seatIdx}</span>
+                  </div>
+                  <span className={`text-[10px] font-bold px-1.5 py-0.2 rounded ${
+                    isAlive ? 'bg-emerald-50 text-emerald-700' : 'bg-rose-50 text-rose-700 line-through'
+                  }`}>
+                    {isAlive ? `${Math.round(hp)} HP` : 'DEAD'}
+                  </span>
+                </div>
+                {/* Health bar */}
+                <div className="w-full bg-slate-200 rounded-full h-1.5 overflow-hidden">
+                  <div
+                    className={`h-1.5 rounded-full transition-all duration-100 ${
+                      hpPct > 50 ? 'bg-emerald-500' : hpPct > 20 ? 'bg-amber-500' : 'bg-rose-500'
+                    }`}
+                    style={{ width: `${isAlive ? hpPct : 0}%` }}
+                  />
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      </div>
+
       {/* Control Toolbar */}
-      <div className="px-4 py-3 bg-slate-950/90 border-t border-slate-800 space-y-2">
+      <div className="px-5 py-4 bg-white space-y-3">
         {/* Scrubber Timeline */}
         <div className="flex items-center gap-3">
           <input
@@ -316,17 +357,17 @@ export const ReplayViewer2D: React.FC<ReplayViewer2DProps> = ({ replayData, matc
             max={totalTicks}
             value={currentTick}
             onChange={handleScrubberChange}
-            className="w-full h-1.5 bg-slate-800 rounded-lg appearance-none cursor-pointer accent-sky-500 focus:outline-none"
+            className="w-full h-2 bg-slate-200 rounded-lg appearance-none cursor-pointer accent-blue-600 focus:outline-none"
           />
         </div>
 
         {/* Playback Buttons */}
-        <div className="flex items-center justify-between text-xs pt-1">
+        <div className="flex flex-wrap items-center justify-between gap-3 text-xs pt-1">
           <div className="flex items-center gap-2">
             <button
               onClick={handleReset}
               title="Restart"
-              className="p-1.5 rounded hover:bg-slate-800 text-slate-400 hover:text-slate-200 transition"
+              className="p-2 rounded-lg hover:bg-slate-100 text-slate-600 hover:text-slate-900 transition border border-slate-200 hover:border-slate-300 shadow-2xs cursor-pointer"
             >
               <RotateCcw className="w-4 h-4" />
             </button>
@@ -334,38 +375,38 @@ export const ReplayViewer2D: React.FC<ReplayViewer2DProps> = ({ replayData, matc
             <button
               onClick={() => handleStep(-1)}
               title="Previous Tick"
-              className="p-1.5 rounded hover:bg-slate-800 text-slate-400 hover:text-slate-200 transition"
+              className="p-2 rounded-lg hover:bg-slate-100 text-slate-600 hover:text-slate-900 transition border border-slate-200 hover:border-slate-300 shadow-2xs cursor-pointer"
             >
               <SkipBack className="w-4 h-4" />
             </button>
 
             <button
               onClick={togglePlay}
-              className="flex items-center justify-center w-8 h-8 rounded-full bg-sky-600 hover:bg-sky-500 text-white shadow transition"
+              className="flex items-center justify-center w-10 h-10 rounded-full bg-blue-600 hover:bg-blue-700 text-white shadow-md shadow-blue-500/30 hover:scale-105 active:scale-95 transition-all cursor-pointer"
             >
-              {isPlaying ? <Pause className="w-4 h-4" /> : <Play className="w-4 h-4 ml-0.5" />}
+              {isPlaying ? <Pause className="w-5 h-5 fill-white" /> : <Play className="w-5 h-5 ml-0.5 fill-white" />}
             </button>
 
             <button
               onClick={() => handleStep(1)}
               title="Next Tick"
-              className="p-1.5 rounded hover:bg-slate-800 text-slate-400 hover:text-slate-200 transition"
+              className="p-2 rounded-lg hover:bg-slate-100 text-slate-600 hover:text-slate-900 transition border border-slate-200 hover:border-slate-300 shadow-2xs cursor-pointer"
             >
               <SkipForward className="w-4 h-4" />
             </button>
 
-            <div className="h-4 w-px bg-slate-800 mx-1" />
+            <div className="h-5 w-px bg-slate-200 mx-2 hidden sm:block" />
 
             {/* Speed Multipliers */}
-            <div className="flex items-center gap-1 font-mono text-[11px]">
+            <div className="flex items-center gap-1.5 font-mono text-xs font-bold">
               {[0.5, 1, 2, 5, 10].map((spd) => (
                 <button
                   key={spd}
                   onClick={() => setSpeed(spd)}
-                  className={`px-2 py-0.5 rounded transition ${
+                  className={`px-2.5 py-1 rounded-md transition-all cursor-pointer ${
                     speed === spd
-                      ? 'bg-sky-600 text-white font-bold'
-                      : 'bg-slate-800/80 text-slate-400 hover:text-slate-200'
+                      ? 'bg-blue-600 text-white shadow-xs'
+                      : 'bg-slate-100 text-slate-600 hover:bg-slate-200 hover:text-slate-900'
                   }`}
                 >
                   {spd}x
@@ -374,8 +415,9 @@ export const ReplayViewer2D: React.FC<ReplayViewer2DProps> = ({ replayData, matc
             </div>
           </div>
 
-          <div className="flex items-center gap-3 text-slate-400 text-[11px] font-mono">
-            <span>60 FPS Replay</span>
+          <div className="flex items-center gap-2 text-slate-500 text-xs font-mono font-semibold">
+            <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse" />
+            <span>60 FPS Tactical Replay Engine</span>
           </div>
         </div>
       </div>

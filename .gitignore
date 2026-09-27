@@ -3,6 +3,8 @@ backend/bin/
 frontend/dist/
 frontend/node_modules/
 simulation/arbiter/target/
+__pycache__/
+*.py[cod]
 
 # Local data & logs
 var/agentrix/

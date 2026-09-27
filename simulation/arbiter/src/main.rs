@@ -1,3 +1,4 @@
+mod admission;
 mod config;
 mod engine;
 mod geometry;
@@ -10,6 +11,7 @@ use engine::Engine;
 use process::BotManager;
 use std::env;
 use std::fs;
+use std::io::Read;
 use std::time::Duration;
 
 fn print_usage() {
@@ -24,6 +26,7 @@ fn print_usage() {
          Parámetros de Partida:\n\
            --seed <u32>         Semilla aleatoria (defecto: 2026)\n\
            --duration <f32>     Duración máxima en segundos (defecto: 180.0)\n\
+           --config <ruta>      JSON de reglas (excluye --duration)\n\
            --warmup-ms <u64>    Tiempo de inicialización en ms (defecto: 10000)\n\
            --tick-ms <u64>      Tiempo máximo por tick en ms (defecto: 50)\n\n\
          Archivos de Salida:\n\
@@ -52,10 +55,21 @@ fn main() {
     let mut tick_ms: u64 = 50;
     let mut out_results: Option<String> = None;
     let mut out_replay: Option<String> = None;
+    let mut admit = false;
+    let mut config_path: Option<String> = None;
+    let mut duration_explicit = false;
 
     let mut i = 1;
     while i < args.len() {
         match args[i].as_str() {
+            "--config" if i + 1 < args.len() => {
+                config_path = Some(args[i + 1].clone());
+                i += 2;
+            }
+            "--admit" => {
+                admit = true;
+                i += 1;
+            }
             "--b0" if i + 1 < args.len() => {
                 bot_cmds[0] = args[i + 1].clone();
                 i += 2;
@@ -77,11 +91,18 @@ fn main() {
                 i += 2;
             }
             "--seed" if i + 1 < args.len() => {
-                seed = args[i + 1].parse().unwrap_or(2026);
+                seed = args[i + 1].parse().unwrap_or_else(|_| {
+                    eprintln!("Invalid seed: expected an unsigned 32-bit integer");
+                    std::process::exit(1)
+                });
                 i += 2;
             }
             "--duration" if i + 1 < args.len() => {
-                duration = args[i + 1].parse().unwrap_or(180.0);
+                duration = args[i + 1].parse().unwrap_or_else(|_| {
+                    eprintln!("Invalid duration");
+                    std::process::exit(1)
+                });
+                duration_explicit = true;
                 i += 2;
             }
             "--warmup-ms" if i + 1 < args.len() => {
@@ -108,14 +129,59 @@ fn main() {
         }
     }
 
+    if admit {
+        match admission::validate(bot_cmds[0].clone()) {
+            Ok(()) => {
+                println!("{{\"protocol_version\":1,\"validated_ticks\":3,\"status\":\"ADMITTED\"}}")
+            }
+            Err(error) => {
+                eprintln!("Admission failed: {error}");
+                std::process::exit(1);
+            }
+        }
+        return;
+    }
+
+    let mut cfg = config::Config::default();
+    if let Some(path) = config_path {
+        if duration_explicit {
+            eprintln!("--config and --duration are mutually exclusive");
+            std::process::exit(1)
+        }
+        let file = fs::File::open(path).unwrap_or_else(|e| {
+            eprintln!("Could not read config: {e}");
+            std::process::exit(1)
+        });
+        let mut data = Vec::new();
+        file.take(16385).read_to_end(&mut data).unwrap_or_else(|e| {
+            eprintln!("Could not read config: {e}");
+            std::process::exit(1)
+        });
+        if data.len() > 16384 {
+            eprintln!("Configuration exceeds 16 KiB");
+            std::process::exit(1)
+        }
+        cfg = serde_json::from_slice(&data).unwrap_or_else(|e| {
+            eprintln!("Invalid config: {e}");
+            std::process::exit(1)
+        });
+    } else {
+        cfg.match_rules.duration = duration;
+    }
+    let mut engine = Engine::with_config(seed, cfg, default_models()).unwrap_or_else(|e| {
+        eprintln!("Invalid rules: {e}");
+        std::process::exit(1)
+    });
     println!(
         "[Árbitro] Inicializando partida con semilla {} (duración: {} s)",
-        seed, duration
+        seed, engine.cfg.match_rules.duration
     );
-    let mut engine = Engine::new(seed, duration, default_models());
 
     println!("[Árbitro] Lanzando 5 procesos de bots...");
-    let mut bot_manager = BotManager::new(&bot_cmds);
+    let mut bot_manager = BotManager::new(&bot_cmds).unwrap_or_else(|err| {
+        eprintln!("Could not start all bot seats: {err}");
+        std::process::exit(1);
+    });
 
     println!("[Árbitro] Fase de Warm-up (hasta {} ms)...", warmup_ms);
     let ready_flags = bot_manager.warmup(Duration::from_millis(warmup_ms));
@@ -144,7 +210,11 @@ fn main() {
 
     while !engine.is_ended() {
         for s in 0..5 {
-            observations[s] = engine.build_observation(s);
+            observations[s] = if engine.players[s].alive {
+                engine.build_observation(s)
+            } else {
+                String::new()
+            };
         }
 
         let actions = bot_manager.step(&observations, tick_duration, engine.tick);
@@ -156,6 +226,15 @@ fn main() {
         engine.step(&actions);
     }
 
+    if engine.replay_overflow {
+        eprintln!(
+            "Replay exceeded the {} MiB construction quota; match results were not published",
+            128
+        );
+        bot_manager.terminate();
+        std::process::exit(1);
+    }
+
     let elapsed = start_time.elapsed();
     println!(
         "[Árbitro] Partida terminada en {} ticks ({:.2} s simulados) en {:.2} s de tiempo real ({:.1}× velocidad real)",
@@ -165,7 +244,9 @@ fn main() {
         engine.time() / elapsed.as_secs_f32()
     );
 
-    bot_manager.terminate();
+    let final_ranking =
+        ranking::calculate(&engine.players, engine.cfg.match_rules.mobs_as_kills, true);
+    bot_manager.finish(&final_ranking);
 
     let results_json = engine.results_json();
     if let Some(path) = out_results {

@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { X, UploadCloud, CheckCircle2, AlertCircle, FileArchive, Loader2 } from 'lucide-react';
+import { X, UploadCloud, CheckCircle2, AlertCircle, FileArchive, Loader2, Sparkles } from 'lucide-react';
 import { api } from '../api/client';
 import { Arena, Team } from '../types';
 
@@ -24,10 +24,10 @@ export const UploadBotModal: React.FC<UploadBotModalProps> = ({
   const [botName, setBotName] = useState('');
   const [teamId, setTeamId] = useState<number>(teams[0]?.id || 1);
   const [arenaId, setArenaId] = useState<number>(defaultArenaId);
-  const [runtime, setRuntime] = useState('python-standard');
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [successMsg, setSuccessMsg] = useState<string | null>(null);
+  const [isDragging, setIsDragging] = useState(false);
 
   if (!isOpen) return null;
 
@@ -41,10 +41,35 @@ export const UploadBotModal: React.FC<UploadBotModalProps> = ({
     }
   };
 
+  const handleDragOver = (e: React.DragEvent) => {
+    e.preventDefault();
+    setIsDragging(true);
+  };
+
+  const handleDragLeave = () => {
+    setIsDragging(false);
+  };
+
+  const handleDrop = (e: React.DragEvent) => {
+    e.preventDefault();
+    setIsDragging(false);
+    if (e.dataTransfer.files && e.dataTransfer.files[0]) {
+      const dropped = e.dataTransfer.files[0];
+      setFile(dropped);
+      if (!botName) {
+        setBotName(dropped.name.replace(/\.[^/.]+$/, ''));
+      }
+    }
+  };
+
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!file) {
-      setError('Please select a bot archive (.zip)');
+      setError('Please select a bot package archive (.zip)');
+      return;
+    }
+    if (file.size > 100 * 1024 * 1024) {
+      setError('ZIP exceeds the 100 MiB package limit');
       return;
     }
 
@@ -58,10 +83,9 @@ export const UploadBotModal: React.FC<UploadBotModalProps> = ({
       formData.append('bot_name', botName);
       formData.append('team_id', teamId.toString());
       formData.append('arena_id', arenaId.toString());
-      formData.append('runtime', runtime);
 
       const resp = await api.uploadAgent(formData);
-      setSuccessMsg(resp.message || 'Bot uploaded and validated successfully!');
+      setSuccessMsg(resp.message || 'Bot package uploaded and sandbox-validated successfully!');
       setTimeout(() => {
         onSuccess();
         onClose();
@@ -74,59 +98,62 @@ export const UploadBotModal: React.FC<UploadBotModalProps> = ({
   };
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 backdrop-blur-sm p-4">
-      <div className="bg-slate-900 border border-slate-800 rounded-lg shadow-xl w-full max-w-md overflow-hidden animate-in fade-in zoom-in-95 duration-150">
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/50 backdrop-blur-sm p-4">
+      <div className="bg-white border border-slate-200 rounded-2xl shadow-2xl w-full max-w-md overflow-hidden animate-fade-in">
         {/* Header */}
-        <div className="flex items-center justify-between px-5 py-4 border-b border-slate-800 bg-slate-950/60">
-          <div className="flex items-center gap-2">
-            <div className="w-7 h-7 rounded bg-sky-500/10 border border-sky-500/30 flex items-center justify-center text-sky-400">
-              <UploadCloud className="w-4 h-4" />
+        <div className="flex items-center justify-between px-6 py-5 border-b border-slate-100 bg-slate-50/70">
+          <div className="flex items-center gap-3">
+            <div className="w-10 h-10 rounded-xl bg-blue-50 border border-blue-100 flex items-center justify-center text-blue-600 shadow-xs">
+              <UploadCloud className="w-5 h-5" />
             </div>
-            <h3 className="text-sm font-semibold text-slate-100">Upload Agent / Bot Archive</h3>
+            <div>
+              <h3 className="text-base font-black text-slate-900 tracking-tight">Upload Bot Package</h3>
+              <p className="text-[11px] text-slate-400 font-medium">Algorithmic agent sandbox submission</p>
+            </div>
           </div>
           <button
             onClick={onClose}
-            className="text-slate-400 hover:text-slate-200 p-1 rounded hover:bg-slate-800 transition"
+            className="text-slate-400 hover:text-slate-700 p-1.5 rounded-lg hover:bg-slate-100 transition"
           >
             <X className="w-4 h-4" />
           </button>
         </div>
 
         {/* Form Body */}
-        <form onSubmit={handleSubmit} className="p-5 space-y-4 text-xs">
+        <form onSubmit={handleSubmit} className="p-6 space-y-4 text-xs">
           {error && (
-            <div className="p-3 rounded bg-red-950/80 border border-red-800/60 text-red-300 flex items-start gap-2">
-              <AlertCircle className="w-4 h-4 mt-0.5 shrink-0 text-red-400" />
+            <div className="p-3.5 rounded-xl bg-rose-50 border border-rose-200 text-rose-700 flex items-start gap-2.5 font-medium">
+              <AlertCircle className="w-4 h-4 mt-0.5 shrink-0 text-rose-500" />
               <span>{error}</span>
             </div>
           )}
 
           {successMsg && (
-            <div className="p-3 rounded bg-emerald-950/80 border border-emerald-800/60 text-emerald-300 flex items-start gap-2">
-              <CheckCircle2 className="w-4 h-4 mt-0.5 shrink-0 text-emerald-400" />
+            <div className="p-3.5 rounded-xl bg-emerald-50 border border-emerald-200 text-emerald-800 flex items-start gap-2.5 font-medium">
+              <CheckCircle2 className="w-4 h-4 mt-0.5 shrink-0 text-emerald-600" />
               <span>{successMsg}</span>
             </div>
           )}
 
           <div>
-            <label className="block text-slate-400 font-medium mb-1">Bot Name</label>
+            <label className="block text-slate-700 font-bold mb-1.5">Agent / Bot Name</label>
             <input
               type="text"
               required
               value={botName}
               onChange={(e) => setBotName(e.target.value)}
-              placeholder="e.g. Apex-Hunter-v1"
-              className="w-full bg-slate-950 border border-slate-800 rounded px-3 py-2 text-slate-100 placeholder-slate-600 focus:outline-none focus:border-sky-500"
+              placeholder="e.g. Apollo-Hunter-v1"
+              className="w-full bg-slate-50 border border-slate-300 rounded-lg px-3 py-2 text-slate-900 placeholder-slate-400 focus:bg-white focus:outline-none focus:border-blue-500 focus:ring-2 focus:ring-blue-100 transition"
             />
           </div>
 
           <div className="grid grid-cols-2 gap-3">
             <div>
-              <label className="block text-slate-400 font-medium mb-1">Team</label>
+              <label className="block text-slate-700 font-bold mb-1.5">Affiliated Team</label>
               <select
                 value={teamId}
                 onChange={(e) => setTeamId(Number(e.target.value))}
-                className="w-full bg-slate-950 border border-slate-800 rounded px-2.5 py-2 text-slate-200 focus:outline-none focus:border-sky-500"
+                className="w-full bg-slate-50 border border-slate-300 rounded-lg px-3 py-2 text-slate-900 focus:bg-white focus:outline-none focus:border-blue-500 focus:ring-2 focus:ring-blue-100 transition"
               >
                 {teams.map((t) => (
                   <option key={t.id} value={t.id}>
@@ -137,11 +164,11 @@ export const UploadBotModal: React.FC<UploadBotModalProps> = ({
             </div>
 
             <div>
-              <label className="block text-slate-400 font-medium mb-1">Target Arena</label>
+              <label className="block text-slate-700 font-bold mb-1.5">Target Contest Arena</label>
               <select
                 value={arenaId}
                 onChange={(e) => setArenaId(Number(e.target.value))}
-                className="w-full bg-slate-950 border border-slate-800 rounded px-2.5 py-2 text-slate-200 focus:outline-none focus:border-sky-500"
+                className="w-full bg-slate-50 border border-slate-300 rounded-lg px-3 py-2 text-slate-900 focus:bg-white focus:outline-none focus:border-blue-500 focus:ring-2 focus:ring-blue-100 transition"
               >
                 {arenas.map((a) => (
                   <option key={a.id} value={a.id}>
@@ -152,38 +179,42 @@ export const UploadBotModal: React.FC<UploadBotModalProps> = ({
             </div>
           </div>
 
-          <div>
-            <label className="block text-slate-400 font-medium mb-1">Runtime Environment</label>
-            <select
-              value={runtime}
-              onChange={(e) => setRuntime(e.target.value)}
-              className="w-full bg-slate-950 border border-slate-800 rounded px-2.5 py-2 text-slate-200 focus:outline-none focus:border-sky-500"
-            >
-              <option value="python-standard">Python 3.11 (Standard packages + SDK)</option>
-              <option value="rust-musl">Rust (Static musl binary)</option>
-              <option value="cpp-native">C++ (Linux x86_64 binary)</option>
-              <option value="binary">Generic Script / run.sh Executable</option>
-            </select>
-          </div>
-
           {/* File Upload Box */}
           <div>
-            <label className="block text-slate-400 font-medium mb-1">Bot Package (.zip archive)</label>
-            <div className="border-2 border-dashed border-slate-800 hover:border-slate-700 rounded-lg p-4 text-center bg-slate-950/40 cursor-pointer relative">
+            <label className="block text-slate-700 font-bold mb-1.5">Bot Package (.zip archive)</label>
+            <div
+              onDragOver={handleDragOver}
+              onDragLeave={handleDragLeave}
+              onDrop={handleDrop}
+              className={`border-2 border-dashed rounded-xl p-5 text-center cursor-pointer relative transition-all ${
+                isDragging
+                  ? 'border-blue-500 bg-blue-50/80 scale-[1.01]'
+                  : 'border-slate-300 hover:border-blue-400 bg-slate-50/60'
+              }`}
+            >
               <input
                 type="file"
                 accept=".zip"
                 onChange={handleFileChange}
                 className="absolute inset-0 opacity-0 cursor-pointer"
               />
-              <div className="flex flex-col items-center justify-center gap-1.5 pointer-events-none">
-                <FileArchive className="w-8 h-8 text-slate-500" />
+              <div className="flex flex-col items-center justify-center gap-2 pointer-events-none">
+                <div className="w-10 h-10 rounded-full bg-blue-100/70 text-blue-600 flex items-center justify-center">
+                  <FileArchive className="w-5 h-5" />
+                </div>
                 {file ? (
-                  <span className="font-mono text-sky-400 text-xs font-semibold">{file.name} ({(file.size / 1024).toFixed(1)} KB)</span>
+                  <div className="space-y-0.5">
+                    <span className="font-mono text-blue-700 text-xs font-bold block">{file.name}</span>
+                    <span className="text-[11px] text-slate-500 font-medium">
+                      {(file.size / 1024).toFixed(1)} KB — Ready to upload
+                    </span>
+                  </div>
                 ) : (
                   <>
-                    <span className="text-slate-300 font-medium">Click or drag & drop .zip here</span>
-                    <span className="text-[10px] text-slate-500">Max size 25 MB. Must contain agentrix.json, run.sh or agent.py</span>
+                    <span className="text-slate-800 font-bold text-xs">Click or drag & drop ZIP archive here</span>
+                    <span className="text-[10px] text-slate-400">
+                      Limit 100 MiB. Must contain root <code className="bg-slate-200 px-1 py-0.2 rounded font-mono text-slate-700">agentrix.json</code> manifest.
+                    </span>
                   </>
                 )}
               </div>
@@ -191,27 +222,27 @@ export const UploadBotModal: React.FC<UploadBotModalProps> = ({
           </div>
 
           {/* Footer Actions */}
-          <div className="flex items-center justify-end gap-2 pt-3 border-t border-slate-800">
+          <div className="flex items-center justify-end gap-2.5 pt-3 border-t border-slate-100">
             <button
               type="button"
               onClick={onClose}
-              className="px-3 py-1.5 rounded bg-slate-800 hover:bg-slate-700 text-slate-300 font-medium transition"
+              className="px-4 py-2 rounded-lg bg-slate-100 hover:bg-slate-200 text-slate-700 font-semibold transition"
             >
               Cancel
             </button>
             <button
               type="submit"
               disabled={loading || !file}
-              className="inline-flex items-center gap-1.5 px-4 py-1.5 rounded bg-sky-600 hover:bg-sky-500 disabled:opacity-50 text-white font-medium transition"
+              className="inline-flex items-center gap-1.5 px-5 py-2 rounded-lg bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-700 hover:to-indigo-700 text-white font-bold shadow-xs hover:shadow active:scale-[0.98] disabled:opacity-50 transition"
             >
               {loading ? (
                 <>
-                  <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                  <Loader2 className="w-4 h-4 animate-spin" />
                   <span>Validating & Deploying...</span>
                 </>
               ) : (
                 <>
-                  <UploadCloud className="w-3.5 h-3.5" />
+                  <UploadCloud className="w-4 h-4" />
                   <span>Upload & Register</span>
                 </>
               )}

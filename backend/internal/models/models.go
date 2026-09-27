@@ -42,6 +42,7 @@ type Arena struct {
 	MaxTicks    int                    `json:"max_ticks"`
 	ConfigJSON  map[string]interface{} `json:"config_json"`
 	IsActive    bool                   `json:"is_active"`
+	Frozen      bool                   `json:"frozen"`
 	CreatedAt   time.Time              `json:"created_at"`
 }
 
@@ -62,24 +63,24 @@ type AgentVersion struct {
 }
 
 type LadderEntry struct {
-	ID                  int       `json:"id"`
-	ArenaID             int       `json:"arena_id"`
-	AgentVersionID      int       `json:"agent_version_id"`
-	AgentName           string    `json:"agent_name"`
-	TeamID              int       `json:"team_id"`
-	TeamName            string    `json:"team_name"`
-	RatingMu            float64   `json:"rating_mu"`
-	RatingSigma         float64   `json:"rating_sigma"`
-	DisplayRating       int       `json:"display_rating"`
-	MatchesPlayed       int       `json:"matches_played"`
-	Wins                int       `json:"wins"`
-	Kills               int       `json:"kills"`
-	SurvivalTicksTotal  int64     `json:"survival_ticks_total"`
-	LastMatchAt         *time.Time `json:"last_match_at"`
-	UpdatedAt           time.Time `json:"updated_at"`
-	Status              string    `json:"status"` // agent status
-	WinRate             float64   `json:"win_rate"`
-	AvgSurvivalTicks    float64   `json:"avg_survival_ticks"`
+	ID                 int        `json:"id"`
+	ArenaID            int        `json:"arena_id"`
+	AgentVersionID     int        `json:"agent_version_id"`
+	AgentName          string     `json:"agent_name"`
+	TeamID             int        `json:"team_id"`
+	TeamName           string     `json:"team_name"`
+	RatingMu           float64    `json:"rating_mu"`
+	RatingSigma        float64    `json:"rating_sigma"`
+	DisplayRating      int        `json:"display_rating"`
+	MatchesPlayed      int        `json:"matches_played"`
+	Wins               int        `json:"wins"`
+	Kills              int        `json:"kills"`
+	SurvivalTicksTotal int64      `json:"survival_ticks_total"`
+	LastMatchAt        *time.Time `json:"last_match_at"`
+	UpdatedAt          time.Time  `json:"updated_at"`
+	Status             string     `json:"status"` // agent status
+	WinRate            float64    `json:"win_rate"`
+	AvgSurvivalTicks   float64    `json:"avg_survival_ticks"`
 }
 
 type Match struct {
@@ -119,14 +120,14 @@ type MatchParticipant struct {
 }
 
 type Replay struct {
-	ID              int                    `json:"id"`
-	MatchID         int                    `json:"match_id"`
-	FilePath        string                 `json:"-"`
-	SHA256          string                 `json:"sha256"`
-	SizeBytes       int64                  `json:"size_bytes"`
-	TickCount       int                    `json:"tick_count"`
-	SummaryJSON     map[string]interface{} `json:"summary_json"`
-	CreatedAt       time.Time              `json:"created_at"`
+	ID          int                    `json:"id"`
+	MatchID     int                    `json:"match_id"`
+	FilePath    string                 `json:"-"`
+	SHA256      string                 `json:"sha256"`
+	SizeBytes   int64                  `json:"size_bytes"`
+	TickCount   int                    `json:"tick_count"`
+	SummaryJSON map[string]interface{} `json:"summary_json"`
+	CreatedAt   time.Time              `json:"created_at"`
 }
 
 type AuditLog struct {

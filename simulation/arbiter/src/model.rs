@@ -37,6 +37,36 @@ pub struct Player {
     pub ready: bool,
 }
 
+// Per-frame render state excludes immutable model strings and growing kill
+// histories. Full Player reports remain in results for canonical scoring/audit.
+#[derive(Serialize)]
+#[allow(dead_code)]
+pub struct ReplayPlayer {
+    pub id: usize,
+    pub pos: Vec2,
+    pub facing: f32,
+    pub hp: f32,
+    pub max_hp: f32,
+    pub vision: f32,
+    pub alive: bool,
+    pub kills: u32,
+}
+
+impl From<&Player> for ReplayPlayer {
+    fn from(player: &Player) -> Self {
+        Self {
+            id: player.id,
+            pos: player.pos,
+            facing: player.facing,
+            hp: player.hp,
+            max_hp: player.max_hp,
+            vision: player.vision,
+            alive: player.alive,
+            kills: player.kills,
+        }
+    }
+}
+
 impl Player {
     pub fn create(
         id: usize,
@@ -98,6 +128,7 @@ pub struct Mob {
 
 #[derive(Clone, Serialize, Deserialize, Debug)]
 pub struct Bullet {
+    pub id: u64,
     pub pos: Vec2,
     pub owner: usize,
     pub damage: f32,
@@ -114,6 +145,8 @@ pub struct Rank {
     pub id: usize,
     pub kills: u32,
     pub place: usize,
+    pub survival_place: usize,
+    pub last_kill_tick: Option<u32>,
     pub kill_part: f32,
     pub survival_part: f32,
     pub score: f32,

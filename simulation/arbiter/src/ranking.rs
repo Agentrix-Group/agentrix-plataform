@@ -1,5 +1,7 @@
 use crate::model::{Player, Rank};
 
+pub const SCORE_VERSION: &str = "agentrix-score-v1";
+
 pub fn calculate(players: &[Player], mobs_as_kills: bool, final_result: bool) -> Vec<Rank> {
     let n = players.len();
     if n < 2 {
@@ -86,6 +88,8 @@ pub fn calculate(players: &[Player], mobs_as_kills: bool, final_result: bool) ->
                 id: i,
                 kills: kills[i],
                 place: places[i],
+                survival_place: places[i],
+                last_kill_tick: None,
                 kill_part,
                 survival_part,
                 // This is the single canonical per-match score. Consumers aggregate
@@ -113,6 +117,12 @@ pub fn calculate(players: &[Player], mobs_as_kills: bool, final_result: bool) ->
         })
         .collect();
 
+    for rank in &mut result {
+        rank.last_kill_tick = match reached_times[rank.id] {
+            u32::MAX => None,
+            tick => Some(tick),
+        };
+    }
     result.sort_by(|a, b| {
         a.disqualified.cmp(&b.disqualified).then_with(|| {
             b.score
@@ -122,6 +132,23 @@ pub fn calculate(players: &[Player], mobs_as_kills: bool, final_result: bool) ->
                 .then(a.id.cmp(&b.id))
         })
     });
+
+    // `place` is the competitive result consumed by Elo and the web. The
+    // survival placement used in the score stays available separately.
+    for i in 0..result.len() {
+        result[i].place = if result[i].disqualified {
+            n
+        } else if i > 0
+            && !result[i - 1].disqualified
+            && result[i].score == result[i - 1].score
+            && result[i].last_kill_tick == result[i - 1].last_kill_tick
+            && result[i].survival_place == result[i - 1].survival_place
+        {
+            result[i - 1].place
+        } else {
+            i + 1
+        };
+    }
 
     result
 }
@@ -172,5 +199,31 @@ mod tests {
         let winner = result.iter().find(|rank| rank.id == 0).unwrap();
 
         assert_eq!(100.0, winner.score);
+    }
+
+    #[test]
+    fn competitive_place_follows_score_not_survival() {
+        let mut input = players();
+        for i in 1..5 {
+            input[i].alive = false;
+            input[i].death_tick = Some((5 - i) as u32);
+        }
+        input[1].kills = 4;
+        input[1].kill_times = vec![1, 2, 3, 4];
+        let result = calculate(&input, false, true);
+        assert_eq!(result[0].id, 1);
+        assert_eq!(result[0].place, 1);
+        assert_eq!(result[0].survival_place, 2);
+        assert!(result[0].score > result[1].score);
+    }
+
+    #[test]
+    fn equal_results_share_competitive_place() {
+        let mut input = players();
+        for player in &mut input {
+            player.hp = 100.0;
+        }
+        let result = calculate(&input, false, true);
+        assert!(result.iter().all(|r| r.place == 1));
     }
 }

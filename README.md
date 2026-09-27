@@ -21,7 +21,10 @@ make run-local
 ```
 - **Frontend SPA:** http://localhost:3000
 - **Backend REST API:** http://localhost:8080/api/v1
-- **Credenciales Admin:** `admin` / `admin123`
+- No hay credenciales por defecto. Antes de arrancar, configura una clave privada
+  `JWT_SECRET` de al menos 32 bytes y, para la primera instalación,
+  `BOOTSTRAP_ADMIN_USERNAME`, `BOOTSTRAP_ADMIN_EMAIL` y `BOOTSTRAP_ADMIN_PASSWORD`
+  (16..72 bytes). Consulta [BOOTSTRAP_SECURITY.md](BOOTSTRAP_SECURITY.md).
 
 ### Modo Contenedor (Docker Compose)
 ```bash
@@ -36,8 +39,8 @@ make up
 | :--- | :--- |
 | `make test` | Ejecuta pruebas unitarias en Go y la suite completa de integración E2E. |
 | `make validate` | Ejecuta la comprobación pre-flight (sandbox bwrap, base de datos, árbitro Rust). |
-| `make backup` | Crea respaldo transaccional de PostgreSQL, repeticiones y manifiesto SHA-256. |
-| `make restore BACKUP=...` | Restaura una copia de seguridad verificando integridad. |
+| `bash scripts/backup.sh --offline-confirmed` | Crea bundle de BD/artefactos; requiere detener escritores primero. |
+| `bash scripts/restore.sh --recover ...` | Recupera solo a una BD y directorios nuevos; véase BACKUP_RESTORE.md. |
 | `make provision` | Ejecuta rondas de calibración y muestra la tabla de clasificación. |
 
-Para documentación detallada, consulta [PLATFORM_GUIDE.md](file:///home/f4nk1/Projects/agentrix-platform/PLATFORM_GUIDE.md).
+Para documentación detallada, consulta [PLATFORM_GUIDE.md](PLATFORM_GUIDE.md).

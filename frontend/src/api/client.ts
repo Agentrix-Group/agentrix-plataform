@@ -10,6 +10,7 @@ import {
   ReplayData
 } from '../types';
 
+import { normalizeReplay } from './replay';
 const API_BASE = '/api/v1';
 
 class ApiClient {
@@ -33,6 +34,7 @@ class ApiClient {
   }
 
   private async request<T>(endpoint: string, options: RequestInit = {}): Promise<T> {
+    const requestToken = this.token;
     const headers: Record<string, string> = {
       Accept: 'application/json',
       ...(options.headers as Record<string, string>),
@@ -50,6 +52,7 @@ class ApiClient {
       ...options,
       headers,
     });
+	if (requestToken !== this.token) throw new Error('Session changed; refresh the view');
 
     if (!response.ok) {
       const errorBody = await response.json().catch(() => ({ error: response.statusText }));
@@ -92,15 +95,31 @@ class ApiClient {
   }
 
   // Ladder
+	async setArenaFreeze(id: number, frozen: boolean): Promise<{ frozen: boolean }> {
+	  return this.request(`/arenas/${id}/freeze`, { method: 'POST', body: JSON.stringify({ frozen }) });
+	}
+
+	async scheduleRound(arenaId: number, idempotencyKey: string, agentVersionIds: number[], seed?: number): Promise<{ id: number; total_matches: number; format_version: string }> {
+	  return this.request(`/arenas/${arenaId}/rounds`, {
+	    method: 'POST',
+	    body: JSON.stringify({
+	      idempotency_key: idempotencyKey,
+	      agent_version_ids: agentVersionIds,
+	      seed,
+	    }),
+	  });
+	}
+
   async getLadder(arenaId: number): Promise<LadderEntry[]> {
     return this.request<LadderEntry[]>(`/arenas/${arenaId}/ladder`);
   }
 
   // Matches
-  async getMatches(arenaId?: number, status?: string): Promise<Match[]> {
+  async getMatches(arenaId?: number, status?: string, beforeId?: number): Promise<Match[]> {
     const params = new URLSearchParams();
     if (arenaId) params.set('arena_id', arenaId.toString());
     if (status) params.set('status', status);
+    if (beforeId) params.set('before_id', beforeId.toString());
     return this.request<Match[]>(`/matches?${params.toString()}`);
   }
 
@@ -126,7 +145,7 @@ class ApiClient {
   }
 
   async getReplay(matchId: number): Promise<ReplayData> {
-    return this.request<ReplayData>(`/matches/${matchId}/replay`);
+    return normalizeReplay(await this.request<ReplayData>(`/matches/${matchId}/replay`));
   }
 
   // Agents

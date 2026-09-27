@@ -2,47 +2,33 @@
 import sys
 import json
 import math
-import time
 
-# Intenta usar numpy / onnx si están instalados, o fallback a álgebra matricial pura
-try:
-    import numpy as np
-    HAVE_NUMPY = True
-except ImportError:
-    HAVE_NUMPY = False
+from pathlib import Path
+import numpy as np
+import onnxruntime as ort
 
 class NeuralPolicy:
-    """Red neuronal MLP ligera: 12 entradas -> 16 ocultas -> 2 salidas (ángulo, disparo)"""
+    """Load the packaged, exported ONNX policy. No random/fallback policy."""
     def __init__(self):
-        # Pesos simulados inicializados con semilla fija
-        if HAVE_NUMPY:
-            rng = np.random.default_rng(2026)
-            self.w1 = rng.standard_normal((12, 16)).astype(np.float32)
-            self.b1 = np.zeros(16, dtype=np.float32)
-            self.w2 = rng.standard_normal((16, 2)).astype(np.float32)
-            self.b2 = np.zeros(2, dtype=np.float32)
-        else:
-            self.w1 = [[0.1 * ((i + j) % 5 - 2) for j in range(16)] for i in range(12)]
-            self.w2 = [[0.1 * ((i + j) % 3 - 1) for j in range(2)] for i in range(16)]
+        options = ort.SessionOptions()
+        options.intra_op_num_threads = 1
+        options.inter_op_num_threads = 1
+        options.execution_mode = ort.ExecutionMode.ORT_SEQUENTIAL
+        self.session = ort.InferenceSession(
+            str(Path(__file__).with_name("model.onnx")),
+            sess_options=options, providers=["CPUExecutionProvider"])
+        inputs = self.session.get_inputs()
+        if len(inputs) != 1 or inputs[0].name != "features" or inputs[0].shape != [1, 12]:
+            raise ValueError("policy must accept float32 features [1,12]")
+        # Actual inference during INIT, before READY, catches incompatible models.
+        self.predict([0.0] * 12)
 
     def predict(self, features):
-        if HAVE_NUMPY:
-            x = np.array(features, dtype=np.float32)
-            h = np.maximum(0, np.dot(x, self.w1) + self.b1)  # ReLU
-            out = np.dot(h, self.w2) + self.b2
-            angle = float(out[0]) % (2.0 * math.pi)
-            shoot = bool(out[1] > 0.0)
-            return angle, shoot
-        else:
-            # Fallback matemático sin numpy
-            h = [0.0] * 16
-            for j in range(16):
-                val = sum(features[i] * self.w1[i][j] for i in range(12))
-                h[j] = max(0.0, val)
-            out = [sum(h[j] * self.w2[j][k] for j in range(16)) for k in range(2)]
-            angle = out[0] % (2.0 * math.pi)
-            shoot = out[1] > 0.0
-            return angle, shoot
+        output = self.session.run(["policy"], {"features": np.asarray([features], dtype=np.float32)})[0]
+        if output.shape != (1, 3) or not np.isfinite(output).all():
+            raise ValueError("policy must produce finite direction_x/direction_y/shoot [1,3]")
+        dx, dy, shoot = map(float, output[0])
+        return math.atan2(dy, dx), shoot > 0.5
 
 def main():
     model = None
@@ -59,8 +45,6 @@ def main():
         phase = msg.get("phase")
 
         if phase == "INIT":
-            # Simular carga de modelo y compilación JIT (100 ms)
-            time.sleep(0.05)
             model = NeuralPolicy()
             response = {"status": "READY"}
             sys.stdout.write(json.dumps(response) + "\n")
@@ -68,7 +52,7 @@ def main():
 
         elif phase == "TICK":
             if model is None:
-                model = NeuralPolicy()
+                raise RuntimeError("TICK received before INIT")
 
             you = msg.get("you", {})
             my_pos = you.get("pos", [600.0, 375.0])

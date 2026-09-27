@@ -1,0 +1,1 @@
+{"version":1,"protocol_version":1,"name":"ONNX","runtime":"python-onnx","entrypoint":"python3 agent.py"}

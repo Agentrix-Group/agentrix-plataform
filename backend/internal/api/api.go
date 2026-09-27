@@ -1,11 +1,10 @@
 package api
 
 import (
-	"compress/gzip"
-	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -14,6 +13,7 @@ import (
 	"strconv"
 	"time"
 
+	"agentrix/backend/internal/artifacts"
 	"agentrix/backend/internal/auth"
 	"agentrix/backend/internal/config"
 	"agentrix/backend/internal/db"
@@ -25,23 +25,28 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
 	"github.com/go-chi/cors"
+	"github.com/jackc/pgx/v5"
 )
 
 type Server struct {
-	cfg        *config.Config
-	pool       *db.Pool
-	runner     *runner.MatchRunner
-	matchmaker *matchmaker.Matchmaker
-	router     chi.Router
+	cfg         *config.Config
+	pool        *db.Pool
+	runner      *runner.MatchRunner
+	matchmaker  *matchmaker.Matchmaker
+	router      chi.Router
+	uploadSlots chan struct{}
+	replaySlots chan struct{}
 }
 
 func NewServer(cfg *config.Config, pool *db.Pool, r *runner.MatchRunner, m *matchmaker.Matchmaker) *Server {
 	s := &Server{
-		cfg:        cfg,
-		pool:       pool,
-		runner:     r,
-		matchmaker: m,
-		router:     chi.NewRouter(),
+		cfg:         cfg,
+		pool:        pool,
+		runner:      r,
+		matchmaker:  m,
+		router:      chi.NewRouter(),
+		uploadSlots: make(chan struct{}, 2),
+		replaySlots: make(chan struct{}, 2),
 	}
 	s.setupRoutes()
 	return s
@@ -58,12 +63,18 @@ func (s *Server) setupRoutes() {
 	r.Use(middleware.RealIP)
 	r.Use(middleware.Logger)
 	r.Use(middleware.Recoverer)
+	r.Use(func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Cache-Control", "no-store")
+			next.ServeHTTP(w, r)
+		})
+	})
 	r.Use(cors.Handler(cors.Options{
 		AllowedOrigins:   []string{"*"},
 		AllowedMethods:   []string{"GET", "POST", "PUT", "DELETE", "OPTIONS"},
 		AllowedHeaders:   []string{"Accept", "Authorization", "Content-Type", "X-CSRF-Token"},
 		ExposedHeaders:   []string{"Link"},
-		AllowCredentials: true,
+		AllowCredentials: false,
 		MaxAge:           300,
 	}))
 	r.Use(auth.Middleware(s.cfg.JWTSecret))
@@ -79,6 +90,8 @@ func (s *Server) setupRoutes() {
 		// Arenas
 		r.Get("/arenas", s.handleListArenas)
 		r.Get("/arenas/{id}", s.handleGetArena)
+		r.Post("/arenas/{id}/freeze", auth.RequireAdmin(s.handleFreezeArena))
+		r.Post("/arenas/{id}/rounds", auth.RequireAdmin(s.handleScheduleRound))
 
 		// Ladder / Standings
 		r.Get("/arenas/{id}/ladder", s.handleGetLadder)
@@ -88,22 +101,22 @@ func (s *Server) setupRoutes() {
 		r.Get("/matches/{id}", s.handleGetMatch)
 		r.Get("/matches/{id}/replay", s.handleGetMatchReplay)
 		r.Get("/matches/{id}/download", s.handleDownloadMatchReplay)
-		r.Post("/matches/trigger", s.handleTriggerMatch)
-		r.Post("/matches/{id}/rerun", s.handleRerunMatch)
+		r.Post("/matches/trigger", auth.RequireAdmin(s.handleTriggerMatch))
+		r.Post("/matches/{id}/rerun", auth.RequireAdmin(s.handleRerunMatch))
 
 		// Agents / Bots
 		r.Get("/agents", s.handleListAgents)
 		r.Get("/agents/{id}", s.handleGetAgent)
-		r.Post("/agents/upload", s.handleUploadAgent)
-		r.Post("/agents/{id}/disqualify", s.handleDisqualifyAgent)
-		r.Post("/agents/{id}/enable", s.handleEnableAgent)
+		r.Post("/agents/upload", auth.RequireAuth(s.handleUploadAgent))
+		r.Post("/agents/{id}/disqualify", auth.RequireAdmin(s.handleDisqualifyAgent))
+		r.Post("/agents/{id}/enable", auth.RequireAdmin(s.handleEnableAgent))
 
 		// Teams & Users
 		r.Get("/teams", s.handleListTeams)
-		r.Get("/users", s.handleListUsers)
+		r.Get("/users", auth.RequireAdmin(s.handleListUsers))
 
 		// Audit Logs
-		r.Get("/audit-logs", s.handleListAuditLogs)
+		r.Get("/audit-logs", auth.RequireAdmin(s.handleListAuditLogs))
 	})
 }
 
@@ -116,7 +129,7 @@ func (s *Server) handleSystemStatus(w http.ResponseWriter, r *http.Request) {
 	_, arbiterErr := os.Stat(s.cfg.ArbiterPath)
 
 	var runningMatches int
-	_ = s.pool.QueryRow(r.Context(), "SELECT count(*) FROM matches WHERE status = 'running'").Scan(&runningMatches)
+	_ = s.pool.QueryRow(r.Context(), "SELECT count(*) FROM matches m WHERE m.status = 'running' AND "+matchVisibility("$1"), isAdmin(r)).Scan(&runningMatches)
 
 	resp := models.SystemStatusResponse{
 		Status:           "operational",
@@ -195,7 +208,8 @@ func (s *Server) handleMe(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleListArenas(w http.ResponseWriter, r *http.Request) {
 	rows, err := s.pool.Query(r.Context(), `
-		SELECT id, slug, name, description, game_type, max_players, max_ticks, config_json, is_active, created_at
+		SELECT id, slug, name, description, game_type, max_players, max_ticks, config_json, is_active, created_at,
+		 EXISTS(SELECT 1 FROM arena_freezes f WHERE f.arena_id=arenas.id)
 		FROM arenas
 		ORDER BY id ASC
 	`)
@@ -209,7 +223,7 @@ func (s *Server) handleListArenas(w http.ResponseWriter, r *http.Request) {
 	for rows.Next() {
 		var a models.Arena
 		var cfgBytes []byte
-		if err := rows.Scan(&a.ID, &a.Slug, &a.Name, &a.Description, &a.GameType, &a.MaxPlayers, &a.MaxTicks, &cfgBytes, &a.IsActive, &a.CreatedAt); err == nil {
+		if err := rows.Scan(&a.ID, &a.Slug, &a.Name, &a.Description, &a.GameType, &a.MaxPlayers, &a.MaxTicks, &cfgBytes, &a.IsActive, &a.CreatedAt, &a.Frozen); err == nil {
 			_ = json.Unmarshal(cfgBytes, &a.ConfigJSON)
 			arenas = append(arenas, a)
 		}
@@ -225,9 +239,10 @@ func (s *Server) handleGetArena(w http.ResponseWriter, r *http.Request) {
 	var a models.Arena
 	var cfgBytes []byte
 	err := s.pool.QueryRow(r.Context(), `
-		SELECT id, slug, name, description, game_type, max_players, max_ticks, config_json, is_active, created_at
+		SELECT id, slug, name, description, game_type, max_players, max_ticks, config_json, is_active, created_at,
+		 EXISTS(SELECT 1 FROM arena_freezes f WHERE f.arena_id=arenas.id)
 		FROM arenas WHERE id = $1
-	`, id).Scan(&a.ID, &a.Slug, &a.Name, &a.Description, &a.GameType, &a.MaxPlayers, &a.MaxTicks, &cfgBytes, &a.IsActive, &a.CreatedAt)
+	`, id).Scan(&a.ID, &a.Slug, &a.Name, &a.Description, &a.GameType, &a.MaxPlayers, &a.MaxTicks, &cfgBytes, &a.IsActive, &a.CreatedAt, &a.Frozen)
 	if err != nil {
 		writeError(w, http.StatusNotFound, "arena not found")
 		return
@@ -240,42 +255,22 @@ func (s *Server) handleGetArena(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleGetLadder(w http.ResponseWriter, r *http.Request) {
 	arenaIDStr := chi.URLParam(r, "id")
 	arenaID, _ := strconv.Atoi(arenaIDStr)
-
-	rows, err := s.pool.Query(r.Context(), `
-		SELECT le.id, le.arena_id, le.agent_version_id, av.name, t.id, t.name,
-		       le.rating_mu, le.rating_sigma, le.display_rating, le.matches_played,
-		       le.wins, le.kills, le.survival_ticks_total, le.last_match_at, le.updated_at,
-		       av.status
-		FROM ladder_entries le
-		JOIN agent_versions av ON le.agent_version_id = av.id
-		JOIN teams t ON av.team_id = t.id
-		WHERE le.arena_id = $1
-		ORDER BY le.display_rating DESC, le.wins DESC, le.kills DESC
-	`, arenaID)
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+	var data []byte
+	var frozen bool
+	err := s.pool.QueryRow(r.Context(), `SELECT CASE WHEN $2 OR f.arena_id IS NULL
+	 THEN (`+ladderSnapshot+`) ELSE f.ladder_json END,
+	 (f.arena_id IS NOT NULL AND NOT $2)
+	 FROM arenas a LEFT JOIN arena_freezes f ON f.arena_id=a.id WHERE a.id=$1`, arenaID, isAdmin(r)).Scan(&data, &frozen)
+	if err == pgx.ErrNoRows {
+		writeError(w, 404, "arena not found")
 		return
 	}
-	defer rows.Close()
-
-	var entries []models.LadderEntry
-	for rows.Next() {
-		var e models.LadderEntry
-		if err := rows.Scan(
-			&e.ID, &e.ArenaID, &e.AgentVersionID, &e.AgentName, &e.TeamID, &e.TeamName,
-			&e.RatingMu, &e.RatingSigma, &e.DisplayRating, &e.MatchesPlayed,
-			&e.Wins, &e.Kills, &e.SurvivalTicksTotal, &e.LastMatchAt, &e.UpdatedAt,
-			&e.Status,
-		); err == nil {
-			if e.MatchesPlayed > 0 {
-				e.WinRate = float64(e.Wins) / float64(e.MatchesPlayed) * 100.0
-				e.AvgSurvivalTicks = float64(e.SurvivalTicksTotal) / float64(e.MatchesPlayed)
-			}
-			entries = append(entries, e)
-		}
+	if err != nil {
+		writeError(w, 500, "ladder query failed")
+		return
 	}
-
-	writeJSON(w, http.StatusOK, entries)
+	w.Header().Set("X-Agentrix-Frozen", strconv.FormatBool(frozen))
+	writeJSON(w, 200, json.RawMessage(data))
 }
 
 // -----------------------------------------------------------------------------
@@ -283,11 +278,26 @@ func (s *Server) handleGetLadder(w http.ResponseWriter, r *http.Request) {
 // -----------------------------------------------------------------------------
 
 func (s *Server) handleListMatches(w http.ResponseWriter, r *http.Request) {
-	arenaID := r.URL.Query().Get("arena_id")
+	arenaID, beforeID := 0, 0
+	for name, target := range map[string]*int{"arena_id": &arenaID, "before_id": &beforeID} {
+		if raw := r.URL.Query().Get(name); raw != "" {
+			n, err := strconv.Atoi(raw)
+			if err != nil || n <= 0 {
+				writeError(w, http.StatusBadRequest, "invalid "+name)
+				return
+			}
+			*target = n
+		}
+	}
 	status := r.URL.Query().Get("status")
 	limitStr := r.URL.Query().Get("limit")
 	limit := 50
-	if l, err := strconv.Atoi(limitStr); err == nil && l > 0 && l <= 100 {
+	if limitStr != "" {
+		l, err := strconv.Atoi(limitStr)
+		if err != nil || l < 1 || l > 100 {
+			writeError(w, http.StatusBadRequest, "limit must be between 1 and 100")
+			return
+		}
 		limit = l
 	}
 
@@ -297,37 +307,49 @@ func (s *Server) handleListMatches(w http.ResponseWriter, r *http.Request) {
 		FROM matches m
 		JOIN arenas a ON m.arena_id = a.id
 		LEFT JOIN agent_versions av ON m.winner_agent_id = av.id
-		WHERE ($1 = '' OR m.arena_id::text = $1)
-		  AND ($2 = '' OR m.status = $2)
+		WHERE ($1::integer = 0 OR m.arena_id = $1)
+		  AND ($5::integer = 0 OR m.id < $5)
+		  AND ($2 = '' OR m.status = $2) AND ` + matchVisibility("$4") + `
 		ORDER BY m.id DESC
 		LIMIT $3
 	`
-	rows, err := s.pool.Query(r.Context(), query, arenaID, status, limit)
+	rows, err := s.pool.Query(r.Context(), query, arenaID, status, limit, isAdmin(r), beforeID)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
 	defer rows.Close()
 
-	var matches []models.Match
+	matches := make([]models.Match, 0, limit)
 	for rows.Next() {
 		var m models.Match
 		var winnerName *string
 		if err := rows.Scan(
 			&m.ID, &m.ArenaID, &m.ArenaName, &m.Seed, &m.Status, &m.TicksPlayed,
 			&m.WinnerAgentID, &winnerName, &m.ErrorMessage, &m.StartedAt, &m.FinishedAt, &m.CreatedAt,
-		); err == nil {
-			if winnerName != nil {
-				m.WinnerName = *winnerName
-			}
-			m.ReplayURL = fmt.Sprintf("/api/v1/matches/%d/replay", m.ID)
-			matches = append(matches, m)
+		); err != nil {
+			writeError(w, http.StatusInternalServerError, err.Error())
+			return
 		}
+		if winnerName != nil {
+			m.WinnerName = *winnerName
+		}
+		m.ReplayURL = fmt.Sprintf("/api/v1/matches/%d/replay", m.ID)
+		matches = append(matches, m)
+	}
+	if err := rows.Err(); err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
 	}
 	rows.Close()
 
-	// Populate participants for each match
+	// One bounded participant query for the entire page, rather than N+1 queries.
+	ids := make([]int, len(matches))
+	indexes := make(map[int]int, len(matches))
 	for i := range matches {
+		ids[i], indexes[matches[i].ID] = matches[i].ID, i
+	}
+	if len(ids) > 0 {
 		pRows, err := s.pool.Query(r.Context(), `
 			SELECT mp.id, mp.match_id, mp.agent_version_id, av.name, t.name,
 			       mp.seat, mp.rank_place, mp.kills, mp.survival_ticks, mp.score,
@@ -335,21 +357,30 @@ func (s *Server) handleListMatches(w http.ResponseWriter, r *http.Request) {
 			FROM match_participants mp
 			JOIN agent_versions av ON mp.agent_version_id = av.id
 			JOIN teams t ON av.team_id = t.id
-			WHERE mp.match_id = $1
-			ORDER BY mp.rank_place ASC, mp.seat ASC
-		`, matches[i].ID)
-		if err == nil {
-			for pRows.Next() {
-				var p models.MatchParticipant
-				if err := pRows.Scan(
-					&p.ID, &p.MatchID, &p.AgentVersionID, &p.AgentName, &p.TeamName,
-					&p.Seat, &p.RankPlace, &p.Kills, &p.SurvivalTicks, &p.Score,
-					&p.Disqualified, &p.DisqualificationReason, &p.OldRating, &p.NewRating, &p.RatingDelta,
-				); err == nil {
-					matches[i].Participants = append(matches[i].Participants, p)
-				}
+			WHERE mp.match_id = ANY($1::integer[])
+			ORDER BY mp.match_id, mp.rank_place ASC, mp.seat ASC
+		`, ids)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+		defer pRows.Close()
+		for pRows.Next() {
+			var p models.MatchParticipant
+			if err := pRows.Scan(
+				&p.ID, &p.MatchID, &p.AgentVersionID, &p.AgentName, &p.TeamName,
+				&p.Seat, &p.RankPlace, &p.Kills, &p.SurvivalTicks, &p.Score,
+				&p.Disqualified, &p.DisqualificationReason, &p.OldRating, &p.NewRating, &p.RatingDelta,
+			); err != nil {
+				writeError(w, http.StatusInternalServerError, err.Error())
+				return
 			}
-			pRows.Close()
+			i := indexes[p.MatchID]
+			matches[i].Participants = append(matches[i].Participants, p)
+		}
+		if err := pRows.Err(); err != nil {
+			writeError(w, http.StatusInternalServerError, err.Error())
+			return
 		}
 	}
 
@@ -369,8 +400,8 @@ func (s *Server) handleGetMatch(w http.ResponseWriter, r *http.Request) {
 		FROM matches m
 		JOIN arenas a ON m.arena_id = a.id
 		LEFT JOIN agent_versions av ON m.winner_agent_id = av.id
-		WHERE m.id = $1
-	`, id).Scan(
+		WHERE m.id = $1 AND `+matchVisibility("$2")+`
+	`, id, isAdmin(r)).Scan(
 		&m.ID, &m.ArenaID, &m.ArenaName, &m.Seed, &m.Status, &m.TicksPlayed,
 		&m.WinnerAgentID, &winnerName, &m.ErrorMessage, &m.ExecutionLog,
 		&m.StartedAt, &m.FinishedAt, &m.CreatedAt,
@@ -381,6 +412,9 @@ func (s *Server) handleGetMatch(w http.ResponseWriter, r *http.Request) {
 	}
 	if winnerName != nil {
 		m.WinnerName = *winnerName
+	}
+	if !isAdmin(r) {
+		m.ExecutionLog = nil
 	}
 	m.ReplayURL = fmt.Sprintf("/api/v1/matches/%d/replay", m.ID)
 
@@ -417,12 +451,25 @@ func (s *Server) handleGetMatchReplay(w http.ResponseWriter, r *http.Request) {
 	id, _ := strconv.Atoi(idStr)
 
 	var filePath string
-	err := s.pool.QueryRow(r.Context(), "SELECT file_path FROM replays WHERE match_id = $1", id).Scan(&filePath)
+	err := s.pool.QueryRow(r.Context(), "SELECT rp.file_path FROM replays rp JOIN matches m ON rp.match_id=m.id WHERE m.id=$1 AND "+matchVisibility("$2"), id, isAdmin(r)).Scan(&filePath)
 	if err != nil {
 		writeError(w, http.StatusNotFound, "replay not found for this match")
 		return
 	}
 
+	filePath, err = confinedReplayPath(s.cfg.ReplaysDir, filePath)
+	if err != nil {
+		writeError(w, http.StatusNotFound, "replay file unavailable")
+		return
+	}
+	select {
+	case s.replaySlots <- struct{}{}:
+		defer func() { <-s.replaySlots }()
+	default:
+		w.Header().Set("Retry-After", "1")
+		writeError(w, http.StatusTooManyRequests, "replay capacity busy; retry shortly")
+		return
+	}
 	f, err := os.Open(filePath)
 	if err != nil {
 		writeError(w, http.StatusNotFound, "replay file not found on storage")
@@ -430,19 +477,17 @@ func (s *Server) handleGetMatchReplay(w http.ResponseWriter, r *http.Request) {
 	}
 	defer f.Close()
 
-	w.Header().Set("Content-Type", "application/json")
-
-	// Decompress gzip and stream raw JSON to browser
-	gzReader, err := gzip.NewReader(f)
+	stream, closeStream, err := replayStream(r.Context(), f, artifacts.MaxReplayBytes)
 	if err != nil {
-		// Not gzipped, stream raw
-		f.Seek(0, io.SeekStart)
-		_, _ = io.Copy(w, f)
+		if r.Context().Err() != nil {
+			return
+		}
+		writeError(w, http.StatusInternalServerError, "replay corrupt or exceeds quota")
 		return
 	}
-	defer gzReader.Close()
-
-	_, _ = io.Copy(w, gzReader)
+	defer closeStream()
+	w.Header().Set("Content-Type", "application/json")
+	_, _ = io.Copy(w, stream)
 }
 
 func (s *Server) handleDownloadMatchReplay(w http.ResponseWriter, r *http.Request) {
@@ -450,15 +495,31 @@ func (s *Server) handleDownloadMatchReplay(w http.ResponseWriter, r *http.Reques
 	id, _ := strconv.Atoi(idStr)
 
 	var filePath string
-	err := s.pool.QueryRow(r.Context(), "SELECT file_path FROM replays WHERE match_id = $1", id).Scan(&filePath)
+	err := s.pool.QueryRow(r.Context(), "SELECT rp.file_path FROM replays rp JOIN matches m ON rp.match_id=m.id WHERE m.id=$1 AND "+matchVisibility("$2"), id, isAdmin(r)).Scan(&filePath)
 	if err != nil {
 		writeError(w, http.StatusNotFound, "replay not found")
 		return
 	}
 
+	filePath, err = confinedReplayPath(s.cfg.ReplaysDir, filePath)
+	if err != nil {
+		writeError(w, http.StatusNotFound, "replay file unavailable")
+		return
+	}
+	f, err := os.Open(filePath)
+	if err != nil {
+		writeError(w, http.StatusNotFound, "replay unavailable")
+		return
+	}
+	defer f.Close()
+	info, err := f.Stat()
+	if err != nil || !info.Mode().IsRegular() || info.Size() > artifacts.MaxReplayBytes+(1<<20) {
+		writeError(w, http.StatusInternalServerError, "stored replay exceeds quota")
+		return
+	}
 	w.Header().Set("Content-Type", "application/gzip")
 	w.Header().Set("Content-Disposition", fmt.Sprintf("attachment; filename=\"agentrix_match_%d_replay.json.gz\"", id))
-	http.ServeFile(w, r, filePath)
+	http.ServeContent(w, r, filepath.Base(filePath), info.ModTime(), f)
 }
 
 func (s *Server) handleTriggerMatch(w http.ResponseWriter, r *http.Request) {
@@ -506,12 +567,7 @@ func (s *Server) handleTriggerMatch(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Trigger async execution
-	go func(mid int) {
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
-		defer cancel()
-		_ = s.runner.ExecuteMatch(ctx, mid)
-	}(matchID)
+	// A bounded queue worker claims this durable scheduled record.
 
 	writeJSON(w, http.StatusAccepted, map[string]interface{}{
 		"message":  "match scheduled successfully",
@@ -525,9 +581,23 @@ func (s *Server) handleRerunMatch(w http.ResponseWriter, r *http.Request) {
 
 	var arenaID int
 	var seed int64
-	err := s.pool.QueryRow(r.Context(), "SELECT arena_id, seed FROM matches WHERE id = $1", id).Scan(&arenaID, &seed)
+	var rules, hash, runtimeSHA256 *string
+	var status string
+	err := s.pool.QueryRow(r.Context(), "SELECT arena_id, seed,rules_json,rules_sha256,runtime_sha256,status FROM matches WHERE id = $1", id).Scan(&arenaID, &seed, &rules, &hash, &runtimeSHA256, &status)
 	if err != nil {
 		writeError(w, http.StatusNotFound, "match not found")
+		return
+	}
+	if status != "finished" && status != "failed" {
+		writeError(w, 409, "only terminal matches can be rerun")
+		return
+	}
+	if rules == nil || hash == nil || runtimeSHA256 == nil {
+		writeError(w, 409, "legacy match lacks immutable rules/runtime snapshot; schedule a new match explicitly")
+		return
+	}
+	if *runtimeSHA256 != s.cfg.RuntimeSHA256 {
+		writeError(w, 409, "current worker runtime differs from original match snapshot")
 		return
 	}
 
@@ -555,17 +625,11 @@ func (s *Server) handleRerunMatch(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	newMatchID, err := s.runner.ScheduleMatch(r.Context(), arenaID, agentIDs, &seed)
+	newMatchID, err := s.runner.ScheduleMatchWithSnapshot(r.Context(), arenaID, agentIDs, seed, []byte(*rules), *hash, *runtimeSHA256)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-
-	go func(mid int) {
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
-		defer cancel()
-		_ = s.runner.ExecuteMatch(ctx, mid)
-	}(newMatchID)
 
 	writeJSON(w, http.StatusAccepted, map[string]interface{}{
 		"message":      "re-match scheduled with identical seed and agents",
@@ -636,9 +700,31 @@ func (s *Server) handleGetAgent(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleUploadAgent(w http.ResponseWriter, r *http.Request) {
-	err := r.ParseMultipartForm(validation.MaxZipSize)
+	select {
+	case s.uploadSlots <- struct{}{}:
+		defer func() { <-s.uploadSlots }()
+	default:
+		writeError(w, 429, "upload workers busy; retry later")
+		return
+	}
+	r.Body = http.MaxBytesReader(w, r.Body, validation.MaxZipSize+1024*1024)
+	err := r.ParseMultipartForm(8 * 1024 * 1024)
 	if err != nil {
+		var tooLarge *http.MaxBytesError
+		if errors.As(err, &tooLarge) {
+			writeError(w, 413, "request exceeds 101 MiB HTTP limit")
+			return
+		}
 		writeError(w, http.StatusBadRequest, "failed to parse multipart form or file too large")
+		return
+	}
+	defer r.MultipartForm.RemoveAll()
+	fileCount := 0
+	for _, files := range r.MultipartForm.File {
+		fileCount += len(files)
+	}
+	if fileCount != 1 || len(r.MultipartForm.File["bot_archive"]) != 1 {
+		writeError(w, 400, "exactly one bot_archive ZIP is required")
 		return
 	}
 
@@ -648,11 +734,22 @@ func (s *Server) handleUploadAgent(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer file.Close()
+	if header.Size > validation.MaxZipSize {
+		writeError(w, 413, "ZIP exceeds 100 MiB")
+		return
+	}
 
 	teamIDStr := r.FormValue("team_id")
 	teamID, _ := strconv.Atoi(teamIDStr)
-	if teamID == 0 {
-		teamID = 1 // default team fallback
+	user, _ := auth.GetUserFromContext(r.Context())
+	var ownerID int
+	if err := s.pool.QueryRow(r.Context(), "SELECT owner_id FROM teams WHERE id=$1", teamID).Scan(&ownerID); err != nil {
+		writeError(w, http.StatusBadRequest, "valid team_id required")
+		return
+	}
+	if user.Role != "admin" && ownerID != user.ID {
+		writeError(w, http.StatusForbidden, "team ownership required")
+		return
 	}
 
 	arenaIDStr := r.FormValue("arena_id")
@@ -676,21 +773,37 @@ func (s *Server) handleUploadAgent(w http.ResponseWriter, r *http.Request) {
 
 	hasher := sha256.New()
 	multiWriter := io.MultiWriter(tempZip, hasher)
-	if _, err := io.Copy(multiWriter, file); err != nil {
+	written, err := io.Copy(multiWriter, io.LimitReader(file, validation.MaxZipSize+1))
+	if err != nil {
 		tempZip.Close()
 		writeError(w, http.StatusInternalServerError, "failed to save upload")
 		return
 	}
 	tempZip.Close()
+	if written > validation.MaxZipSize {
+		writeError(w, 413, "ZIP exceeds 100 MiB")
+		return
+	}
 
 	sha256Hex := hex.EncodeToString(hasher.Sum(nil))
 
 	// Safe extraction
-	extractDir, err := os.MkdirTemp("", "agentrix_bot_*")
+	if err := os.MkdirAll(s.cfg.BotsDir, 0755); err != nil {
+		writeError(w, 500, "artifact storage unavailable")
+		return
+	}
+	extractDir, err := os.MkdirTemp(s.cfg.BotsDir, "bot_"+sha256Hex[:12]+"_")
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to create extraction dir")
 		return
 	}
+	retained := false
+	defer func() {
+		if !retained {
+			_ = os.RemoveAll(extractDir)
+			_ = os.Remove(extractDir + ".zip")
+		}
+	}()
 
 	if err := validation.SafelyExtractZip(tempZip.Name(), extractDir); err != nil {
 		_ = os.RemoveAll(extractDir)
@@ -705,46 +818,79 @@ func (s *Server) handleUploadAgent(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, fmt.Sprintf("bot inspection failed: %v", err))
 		return
 	}
-
-	// Destination directory in var/agentrix/bots
-	targetDir := filepath.Join(s.cfg.BotsDir, fmt.Sprintf("bot_%s_%d", sha256Hex[:12], time.Now().Unix()))
-	_ = os.MkdirAll(filepath.Dir(targetDir), 0755)
-	if err := os.Rename(extractDir, targetDir); err != nil {
-		writeError(w, http.StatusInternalServerError, "failed to store bot artifact")
+	if err := validation.TestBotProtocol(extractDir, manifest, s.cfg.ArbiterPath); err != nil {
+		_ = os.RemoveAll(extractDir)
+		writeError(w, http.StatusBadRequest, fmt.Sprintf("bot protocol validation failed: %v", err))
+		return
+	}
+	artifactSHA, err := validation.DigestPackage(extractDir)
+	if err != nil {
+		writeError(w, 400, "artifact checksum failed")
 		return
 	}
 
-	entrypoint := filepath.Join(targetDir, manifest.Entrypoint)
-	if manifest.Runtime == "python-standard" && !filepath.IsAbs(manifest.Entrypoint) {
-		parts := filepath.SplitList(manifest.Entrypoint)
-		entrypoint = fmt.Sprintf("python3 %s", filepath.Join(targetDir, parts[0]))
+	// Destination directory in var/agentrix/bots
+	targetDir := extractDir
+	if err := storeOriginalZip(tempZip.Name(), targetDir+".zip", sha256Hex); err != nil {
+		writeError(w, 500, "failed to preserve original ZIP")
+		return
 	}
 
+	entrypoint := manifest.Entrypoint
+
 	// Insert agent version
+	tx, err := s.pool.Begin(r.Context())
+	if err != nil {
+		writeError(w, 500, "artifact transaction failed")
+		return
+	}
+	defer tx.Rollback(r.Context())
+	var lockedTeam int
+	if err := tx.QueryRow(r.Context(), "SELECT id FROM teams WHERE id=$1 FOR UPDATE", teamID).Scan(&lockedTeam); err != nil {
+		writeError(w, 400, "team unavailable")
+		return
+	}
+	var version int
+	if err := tx.QueryRow(r.Context(), "SELECT COALESCE(MAX(version),0)+1 FROM agent_versions WHERE team_id=$1 AND arena_id=$2", teamID, arenaID).Scan(&version); err != nil {
+		writeError(w, 500, "version allocation failed")
+		return
+	}
 	var agentID int
-	err = s.pool.QueryRow(r.Context(), `
-		INSERT INTO agent_versions (team_id, arena_id, name, runtime, entrypoint, artifact_path, sha256, status)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, 'active')
+	err = tx.QueryRow(r.Context(), `
+		INSERT INTO agent_versions (team_id, arena_id, name, runtime, entrypoint, artifact_path, sha256, artifact_sha256,version,status)
+		VALUES ($1, $2, $3, $4, $5, $6, $7,$8,$9, 'active')
 		RETURNING id
-	`, teamID, arenaID, botName, manifest.Runtime, entrypoint, targetDir, sha256Hex).Scan(&agentID)
+	`, teamID, arenaID, botName, manifest.Runtime, entrypoint, targetDir, sha256Hex, artifactSHA, version).Scan(&agentID)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, fmt.Sprintf("failed to save agent: %v", err))
 		return
 	}
 
 	// Register in ladder
-	_, _ = s.pool.Exec(r.Context(), `
+	_, err = tx.Exec(r.Context(), `
 		INSERT INTO ladder_entries (arena_id, agent_version_id, rating_mu, display_rating, matches_played, wins, kills)
 		VALUES ($1, $2, 1500.0, 1500, 0, 0, 0)
 		ON CONFLICT (arena_id, agent_version_id) DO NOTHING
 	`, arenaID, agentID)
+	if err != nil {
+		writeError(w, 500, "ladder registration failed")
+		return
+	}
+	// A lost COMMIT acknowledgement must not delete artifacts a committed row may reference.
+	retained = true
+	if err := tx.Commit(r.Context()); err != nil {
+		writeError(w, 500, "artifact commit failed")
+		return
+	}
 
 	writeJSON(w, http.StatusCreated, map[string]interface{}{
-		"message":   "bot uploaded, validated, and registered in ladder successfully",
-		"agent_id":  agentID,
-		"name":      botName,
-		"sha256":    sha256Hex,
-		"runtime":   manifest.Runtime,
+		"message":         "bot uploaded, validated, and registered in ladder successfully",
+		"agent_id":        agentID,
+		"name":            botName,
+		"sha256":          sha256Hex,
+		"artifact_sha256": artifactSHA,
+		"version":         version,
+		"runtime":         manifest.Runtime,
 	})
 }
 

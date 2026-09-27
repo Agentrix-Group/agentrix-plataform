@@ -7,6 +7,39 @@ use crate::model::{Bullet, Event, Mob, Player};
 use crate::process::Action;
 use crate::ranking;
 use serde::Serialize;
+use std::io::{self, Write};
+
+const MAX_REPLAY_JSON_BYTES: usize = 128 * 1024 * 1024;
+// Keep room for the replay envelope, configuration, walls, models and ranking.
+const REPLAY_ENVELOPE_RESERVE: usize = 1024 * 1024;
+
+struct BoundedCounter {
+    bytes: usize,
+    limit: usize,
+}
+
+impl Write for BoundedCounter {
+    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+        let Some(total) = self.bytes.checked_add(buf.len()) else {
+            return Err(io::Error::new(
+                io::ErrorKind::Other,
+                "replay byte count overflow",
+            ));
+        };
+        if total > self.limit {
+            return Err(io::Error::new(
+                io::ErrorKind::Other,
+                "replay byte quota exceeded",
+            ));
+        }
+        self.bytes = total;
+        Ok(buf.len())
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        Ok(())
+    }
+}
 
 struct Random(u32);
 impl Random {
@@ -36,10 +69,246 @@ pub struct ReplayFrame {
     pub tick: u32,
     pub time: f32,
     pub zone_radius: f32,
-    pub players: Vec<Player>,
-    pub mobs: Vec<Mob>,
-    pub bullets: Vec<Bullet>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub keyframe: Option<ReplayKeyframe>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub delta: Option<ReplayDelta>,
     pub events: Vec<Event>,
+}
+
+#[derive(Serialize)]
+pub struct ReplayKeyframe {
+    pub players: Vec<PlayerKeyframe>,
+    pub mobs: Vec<MobKeyframe>,
+    pub bullets: Vec<BulletKeyframe>,
+}
+
+#[derive(Serialize)]
+pub struct ReplayDelta {
+    pub players: Vec<PlayerPositionDelta>,
+    pub player_updates: Vec<PlayerUpdate>,
+    pub mobs: Vec<MobPositionDelta>,
+    pub mob_updates: Vec<MobUpdate>,
+    pub mobs_added: Vec<MobKeyframe>,
+    pub mobs_removed: Vec<u64>,
+    pub bullets: Vec<BulletPositionDelta>,
+    pub bullets_added: Vec<BulletKeyframe>,
+    pub bullets_removed: Vec<u64>,
+}
+
+// Tuple structs serialize as compact JSON arrays. Coordinates/attributes use
+// fixed-point units (1/16 px or HP, 1/4096 rad) to keep deltas small and stable.
+#[derive(Serialize)]
+pub struct PlayerKeyframe(
+    pub usize,
+    pub i32,
+    pub i32,
+    pub i32,
+    pub i32,
+    pub i32,
+    pub i32,
+    pub bool,
+    pub u32,
+);
+#[derive(Serialize)]
+pub struct MobKeyframe(pub u64, pub i32, pub i32, pub i32);
+#[derive(Serialize)]
+pub struct BulletKeyframe(pub u64, pub i32, pub i32);
+#[derive(Serialize)]
+pub struct PlayerPositionDelta(pub usize, pub i32, pub i32, pub i32);
+#[derive(Serialize)]
+pub struct MobPositionDelta(pub u64, pub i32, pub i32);
+#[derive(Serialize)]
+pub struct MobUpdate(pub u64, pub i32);
+#[derive(Serialize)]
+pub struct BulletPositionDelta(pub u64, pub i32, pub i32);
+
+#[derive(Serialize)]
+pub struct PlayerUpdate {
+    pub id: usize,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub hp: Option<i32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub max_hp: Option<i32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub vision: Option<i32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub alive: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub kills: Option<u32>,
+}
+
+#[derive(Clone, Copy)]
+struct PlayerReplayState {
+    id: usize,
+    x: i32,
+    y: i32,
+    facing: i32,
+    hp: i32,
+    max_hp: i32,
+    vision: i32,
+    alive: bool,
+    kills: u32,
+}
+
+#[derive(Clone, Copy)]
+struct MobReplayState {
+    id: u64,
+    x: i32,
+    y: i32,
+    hp: i32,
+}
+#[derive(Clone, Copy)]
+struct BulletReplayState {
+    id: u64,
+    x: i32,
+    y: i32,
+}
+
+#[derive(Clone)]
+struct ReplayStateSnapshot {
+    players: Vec<PlayerReplayState>,
+    mobs: Vec<MobReplayState>,
+    bullets: Vec<BulletReplayState>,
+}
+
+fn fixed(value: f32, scale: f32) -> i32 {
+    (value * scale).round() as i32
+}
+
+impl ReplayStateSnapshot {
+    fn keyframe(&self) -> ReplayKeyframe {
+        ReplayKeyframe {
+            players: self
+                .players
+                .iter()
+                .map(|p| {
+                    PlayerKeyframe(
+                        p.id, p.x, p.y, p.facing, p.hp, p.max_hp, p.vision, p.alive, p.kills,
+                    )
+                })
+                .collect(),
+            mobs: self
+                .mobs
+                .iter()
+                .map(|m| MobKeyframe(m.id, m.x, m.y, m.hp))
+                .collect(),
+            bullets: self
+                .bullets
+                .iter()
+                .map(|b| BulletKeyframe(b.id, b.x, b.y))
+                .collect(),
+        }
+    }
+
+    fn delta(&self, previous: &Self) -> ReplayDelta {
+        let old_players: std::collections::HashMap<_, _> =
+            previous.players.iter().map(|p| (p.id, p)).collect();
+        let players = self
+            .players
+            .iter()
+            .filter_map(|p| {
+                old_players.get(&p.id).map(|old| {
+                    PlayerPositionDelta(p.id, p.x - old.x, p.y - old.y, p.facing - old.facing)
+                })
+            })
+            .collect();
+        let player_updates = self
+            .players
+            .iter()
+            .filter_map(|p| {
+                let old = old_players.get(&p.id)?;
+                let update = PlayerUpdate {
+                    id: p.id,
+                    hp: (p.hp != old.hp).then_some(p.hp),
+                    max_hp: (p.max_hp != old.max_hp).then_some(p.max_hp),
+                    vision: (p.vision != old.vision).then_some(p.vision),
+                    alive: (p.alive != old.alive).then_some(p.alive),
+                    kills: (p.kills != old.kills).then_some(p.kills),
+                };
+                (update.hp.is_some()
+                    || update.max_hp.is_some()
+                    || update.vision.is_some()
+                    || update.alive.is_some()
+                    || update.kills.is_some())
+                .then_some(update)
+            })
+            .collect();
+
+        let old_mobs: std::collections::HashMap<_, _> =
+            previous.mobs.iter().map(|m| (m.id, m)).collect();
+        let new_mobs: std::collections::HashMap<_, _> =
+            self.mobs.iter().map(|m| (m.id, m)).collect();
+        let mobs = self
+            .mobs
+            .iter()
+            .filter_map(|m| {
+                old_mobs
+                    .get(&m.id)
+                    .map(|old| MobPositionDelta(m.id, m.x - old.x, m.y - old.y))
+            })
+            .collect();
+        let mob_updates = self
+            .mobs
+            .iter()
+            .filter_map(|m| {
+                old_mobs
+                    .get(&m.id)
+                    .filter(|old| m.hp != old.hp)
+                    .map(|_| MobUpdate(m.id, m.hp))
+            })
+            .collect();
+        let mobs_added = self
+            .mobs
+            .iter()
+            .filter(|m| !old_mobs.contains_key(&m.id))
+            .map(|m| MobKeyframe(m.id, m.x, m.y, m.hp))
+            .collect();
+        let mobs_removed = previous
+            .mobs
+            .iter()
+            .filter(|m| !new_mobs.contains_key(&m.id))
+            .map(|m| m.id)
+            .collect();
+
+        let old_bullets: std::collections::HashMap<_, _> =
+            previous.bullets.iter().map(|b| (b.id, b)).collect();
+        let new_bullets: std::collections::HashMap<_, _> =
+            self.bullets.iter().map(|b| (b.id, b)).collect();
+        let bullets = self
+            .bullets
+            .iter()
+            .filter_map(|b| {
+                old_bullets
+                    .get(&b.id)
+                    .map(|old| BulletPositionDelta(b.id, b.x - old.x, b.y - old.y))
+            })
+            .collect();
+        let bullets_added = self
+            .bullets
+            .iter()
+            .filter(|b| !old_bullets.contains_key(&b.id))
+            .map(|b| BulletKeyframe(b.id, b.x, b.y))
+            .collect();
+        let bullets_removed = previous
+            .bullets
+            .iter()
+            .filter(|b| !new_bullets.contains_key(&b.id))
+            .map(|b| b.id)
+            .collect();
+
+        ReplayDelta {
+            players,
+            player_updates,
+            mobs,
+            mob_updates,
+            mobs_added,
+            mobs_removed,
+            bullets,
+            bullets_added,
+            bullets_removed,
+        }
+    }
 }
 
 pub struct Engine {
@@ -57,7 +326,12 @@ pub struct Engine {
     pub mob_timer: f32,
     rng: Random,
     next_mob_id: u64,
+    next_bullet_id: u64,
     pub replay_frames: Vec<ReplayFrame>,
+    pub replay_overflow: bool,
+    replay_bytes: usize,
+    pending_replay_events: Vec<Event>,
+    previous_replay_state: Option<ReplayStateSnapshot>,
 }
 
 impl Engine {
@@ -66,10 +340,16 @@ impl Engine {
         cfg.match_rules.duration = duration;
         cfg.sanitize();
 
+        Self::with_config(seed, cfg, models).expect("sanitized internal config")
+    }
+
+    pub fn with_config(seed: u32, cfg: Config, models: Vec<ModelConfig>) -> Result<Self, String> {
+        cfg.validate()?;
+
         let mut engine = Self {
             cfg,
             models,
-            seed: if seed == 0 { 1 } else { seed },
+            seed,
             tick: 0,
             state: "ready".into(),
             zone_radius: initial_radius(),
@@ -81,14 +361,20 @@ impl Engine {
             mob_timer: 0.0,
             rng: Random::new(seed),
             next_mob_id: 0,
+            next_bullet_id: 0,
             replay_frames: vec![],
+            replay_overflow: false,
+            replay_bytes: 0,
+            pending_replay_events: vec![],
+            previous_replay_state: None,
         };
 
         engine.reset();
-        engine
+        Ok(engine)
     }
 
     pub fn reset(&mut self) {
+        self.rng = Random::new(self.seed);
         self.tick = 0;
         self.state = "running".into();
         self.zone_radius = initial_radius();
@@ -99,7 +385,12 @@ impl Engine {
         self.bullets.clear();
         self.events.clear();
         self.replay_frames.clear();
+        self.replay_overflow = false;
+        self.replay_bytes = 0;
+        self.pending_replay_events.clear();
+        self.previous_replay_state = None;
         self.next_mob_id = 0;
+        self.next_bullet_id = 0;
 
         let spawns: Vec<Vec2> = (0..5)
             .map(|i| {
@@ -200,10 +491,12 @@ impl Engine {
     }
 
     fn log(&mut self, text: String) {
-        self.events.push(Event {
+        let event = Event {
             tick: self.tick,
             text,
-        });
+        };
+        self.pending_replay_events.push(event.clone());
+        self.events.push(event);
         if self.events.len() > 100 {
             self.events.remove(0);
         }
@@ -341,6 +634,9 @@ impl Engine {
     }
 
     pub fn step(&mut self, actions: &[Option<Action>]) {
+        if self.replay_overflow {
+            return;
+        }
         self.tick += 1;
         self.update_zone();
 
@@ -351,7 +647,13 @@ impl Engine {
             }
             self.players[i].cooldown -= DT;
 
-            if let Some(Some(act)) = actions.get(i) {
+            {
+                // A missing/late action preserves movement along current facing,
+                // but must never repeat a previous shot.
+                let act = actions.get(i).copied().flatten().unwrap_or(Action {
+                    angle: self.players[i].facing,
+                    shoot: false,
+                });
                 let previous = self.players[i].pos;
                 let (speed, bias) = (self.players[i].speed, self.players[i].turn_bias);
                 let p = &mut self.players[i];
@@ -369,6 +671,7 @@ impl Engine {
                 if act.shoot && p.cooldown <= 0.0 {
                     let angle = p.facing;
                     let bullet = Bullet {
+                        id: self.next_bullet_id,
                         pos: p.pos.moved(angle, PLAYER_R + 3.0),
                         owner: i,
                         damage: p.damage,
@@ -377,6 +680,7 @@ impl Engine {
                         vx: angle.cos() * 430.0,
                         vy: angle.sin() * 430.0,
                     };
+                    self.next_bullet_id = self.next_bullet_id.wrapping_add(1);
                     self.bullets.push(bullet);
                     self.players[i].cooldown = 0.8;
                 }
@@ -415,17 +719,6 @@ impl Engine {
             }
         }
 
-        // 5. Grabar fotograma de replay
-        self.replay_frames.push(ReplayFrame {
-            tick: self.tick,
-            time: self.time(),
-            zone_radius: self.zone_radius,
-            players: self.players.clone(),
-            mobs: self.mobs.clone(),
-            bullets: self.bullets.clone(),
-            events: self.events.clone(),
-        });
-
         // 6. Verificar condición de victoria o límite de tiempo
         let left = self.players.iter().filter(|p| p.alive).count();
         if left <= 1 || self.time() >= self.cfg.match_rules.duration {
@@ -442,6 +735,93 @@ impl Engine {
                 winner
             ));
         }
+        // Record only events not included in a previous frame, including the
+        // terminal event generated above. Results retain their bounded tail.
+        let snapshot = ReplayStateSnapshot {
+            players: self
+                .players
+                .iter()
+                .map(|p| PlayerReplayState {
+                    id: p.id,
+                    x: fixed(p.pos.x, 16.0),
+                    y: fixed(p.pos.y, 16.0),
+                    facing: fixed(p.facing, 4096.0),
+                    hp: fixed(p.hp, 16.0),
+                    max_hp: fixed(p.max_hp, 16.0),
+                    vision: fixed(p.vision, 16.0),
+                    alive: p.alive,
+                    kills: p.kills,
+                })
+                .collect(),
+            mobs: self
+                .mobs
+                .iter()
+                .map(|m| MobReplayState {
+                    id: m.id,
+                    x: fixed(m.pos.x, 16.0),
+                    y: fixed(m.pos.y, 16.0),
+                    hp: fixed(m.hp, 16.0),
+                })
+                .collect(),
+            bullets: self
+                .bullets
+                .iter()
+                .map(|b| BulletReplayState {
+                    id: b.id,
+                    x: fixed(b.pos.x, 16.0),
+                    y: fixed(b.pos.y, 16.0),
+                })
+                .collect(),
+        };
+        let is_keyframe = self.previous_replay_state.is_none() || (self.tick - 1) % 60 == 0;
+        let (keyframe, delta) = if is_keyframe {
+            (Some(snapshot.keyframe()), None)
+        } else {
+            (
+                None,
+                Some(
+                    snapshot.delta(
+                        self.previous_replay_state
+                            .as_ref()
+                            .expect("prior replay state"),
+                    ),
+                ),
+            )
+        };
+        let frame = ReplayFrame {
+            tick: self.tick,
+            time: self.time(),
+            zone_radius: self.zone_radius,
+            keyframe,
+            delta,
+            events: std::mem::take(&mut self.pending_replay_events),
+        };
+        let separator_bytes = usize::from(!self.replay_frames.is_empty());
+        let counter = BoundedCounter {
+            bytes: 0,
+            limit: MAX_REPLAY_JSON_BYTES
+                - REPLAY_ENVELOPE_RESERVE
+                - self.replay_bytes
+                - separator_bytes,
+        };
+        let mut counter = counter;
+        if serde_json::to_writer(&mut counter, &frame).is_err() {
+            self.replay_overflow = true;
+            self.state = "ended".into();
+            return;
+        }
+        let Some(total) = self
+            .replay_bytes
+            .checked_add(counter.bytes)
+            .and_then(|bytes| bytes.checked_add(separator_bytes))
+        else {
+            self.replay_overflow = true;
+            self.state = "ended".into();
+            return;
+        };
+        self.replay_bytes = total;
+        self.replay_frames.push(frame);
+        self.previous_replay_state = Some(snapshot);
     }
 
     fn update_zone(&mut self) {
@@ -703,10 +1083,15 @@ impl Engine {
     pub fn results_json(&self) -> String {
         let ranking = ranking::calculate(&self.players, self.cfg.match_rules.mobs_as_kills, true);
         serde_json::json!({
+            "score_version": ranking::SCORE_VERSION,
+            "engine_version": env!("CARGO_PKG_VERSION"),
+            "rules_version": "agentrix-rules-v1",
+            "effective_config": self.cfg,
             "seed": self.seed,
             "ticks": self.tick,
             "duration": self.time(),
             "winner": ranking.iter().find(|r| !r.disqualified).map(|r| self.players[r.id].name.clone()),
+            "winner_id": ranking.iter().find(|r| !r.disqualified).map(|r| r.id),
             "ranking": ranking,
             "players": self.players,
             "events": self.events,
@@ -715,6 +1100,14 @@ impl Engine {
 
     pub fn replay_json(&self) -> String {
         serde_json::json!({
+            "arena": {"width": W,"height": H,"tick_hz":60},
+            "event_format": "delta-v1",
+            "entity_format": "keyframe-delta-v1",
+            "score_version": ranking::SCORE_VERSION,
+            "engine_version": env!("CARGO_PKG_VERSION"),
+            "rules_version": "agentrix-rules-v1",
+            "effective_config": self.cfg,
+            "ticks": self.tick,
             "seed": self.seed,
             "walls": self.walls,
             "models": self.models,
@@ -734,4 +1127,178 @@ enum Hit {
     Wall,
     Player(usize),
     Mob(u64),
+}
+
+#[cfg(test)]
+mod result_tests {
+    use super::*;
+    use crate::model::ReplayPlayer;
+
+    #[test]
+    fn replay_player_size_does_not_grow_with_kill_histories() {
+        let mut engine = Engine::new(42, 20.0, crate::config::default_models());
+        let baseline = serde_json::to_string(&ReplayPlayer::from(&engine.players[0])).unwrap();
+        engine.players[0].kill_times = vec![1; 10000];
+        engine.players[0].mob_kill_times = vec![1; 10000];
+        let snapshot = serde_json::to_string(&ReplayPlayer::from(&engine.players[0])).unwrap();
+        assert_eq!(snapshot, baseline);
+        let snapshot: serde_json::Value = serde_json::from_str(&snapshot).unwrap();
+        assert!(snapshot.get("kill_times").is_none());
+        assert!(snapshot.get("name").is_none());
+        assert_eq!(snapshot["vision"], engine.players[0].vision);
+        assert_eq!(
+            serde_json::to_value(&engine.players[0]).unwrap()["kill_times"]
+                .as_array()
+                .unwrap()
+                .len(),
+            10000
+        );
+    }
+
+    #[test]
+    fn maximum_duration_render_replay_stays_within_runner_byte_quota() {
+        let mut cfg = Config::default();
+        cfg.match_rules.duration = 900.0;
+        cfg.match_rules.zone = false;
+        cfg.match_rules.walls = 0;
+        cfg.mobs.count = 0;
+        let mut engine = Engine::with_config(42, cfg, crate::config::default_models()).unwrap();
+        while !engine.is_ended() {
+            engine.step(&vec![None; 5]);
+        }
+        assert_eq!(engine.tick, 54000);
+        assert_eq!(engine.replay_frames.len(), 54000);
+        let first_frame = serde_json::to_value(&engine.replay_frames[0]).unwrap();
+        let second_frame = serde_json::to_value(&engine.replay_frames[1]).unwrap();
+        let sixty_first_frame = serde_json::to_value(&engine.replay_frames[60]).unwrap();
+        assert!(first_frame.get("keyframe").is_some());
+        assert!(second_frame.get("delta").is_some());
+        assert!(sixty_first_frame.get("keyframe").is_some());
+        let replay = engine.replay_json();
+        assert!(
+            replay.len() <= 128 * 1024 * 1024,
+            "replay exceeds runner quota: {}",
+            replay.len()
+        );
+    }
+
+    #[test]
+    fn replay_events_are_recorded_once_including_the_terminal_event() {
+        let mut cfg = Config::default();
+        cfg.match_rules.duration = 20.0;
+        cfg.match_rules.zone = false;
+        cfg.match_rules.walls = 0;
+        cfg.mobs.count = 0;
+        let mut engine = Engine::with_config(42, cfg, crate::config::default_models()).unwrap();
+        while !engine.is_ended() {
+            engine.log(format!("event {}", engine.tick));
+            engine.step(&vec![None; 5]);
+        }
+        let flattened: Vec<&Event> = engine
+            .replay_frames
+            .iter()
+            .flat_map(|frame| &frame.events)
+            .collect();
+        assert_eq!(flattened.len(), 1202);
+        assert_eq!(
+            serde_json::to_value(&flattened[flattened.len() - 100..]).unwrap(),
+            serde_json::to_value(&engine.events).unwrap()
+        );
+        assert!(engine
+            .replay_frames
+            .last()
+            .unwrap()
+            .events
+            .last()
+            .unwrap()
+            .text
+            .starts_with("Fin por"));
+        let replay: serde_json::Value = serde_json::from_str(&engine.replay_json()).unwrap();
+        assert_eq!(replay["event_format"], "delta-v1");
+        assert_eq!(replay["entity_format"], "keyframe-delta-v1");
+    }
+
+    #[test]
+    fn zero_seed_is_preserved_and_reset_reproduces_the_same_match() {
+        let mut engine = Engine::new(0, 20.0, crate::config::default_models());
+        while !engine.is_ended() {
+            engine.step(&vec![None; 5]);
+        }
+        let result = engine.results_json();
+        let replay = engine.replay_json();
+        let parsed: serde_json::Value = serde_json::from_str(&result).unwrap();
+        let parsed_replay: serde_json::Value = serde_json::from_str(&replay).unwrap();
+        assert_eq!(engine.seed, 0);
+        assert_eq!(parsed["seed"], 0);
+        assert_eq!(parsed_replay["seed"], 0);
+        engine.reset();
+        while !engine.is_ended() {
+            engine.step(&vec![None; 5]);
+        }
+        assert_eq!(engine.results_json(), result);
+        assert_eq!(engine.replay_json(), replay);
+    }
+
+    #[test]
+    fn configured_rules_are_applied_and_recorded_in_both_artifacts() {
+        let mut cfg = Config::default();
+        cfg.match_rules.duration = 20.0;
+        cfg.match_rules.walls = 0;
+        cfg.match_rules.zone = false;
+        cfg.match_rules.mobs_as_kills = true;
+        cfg.mobs.count = 0;
+        cfg.up.vida = 50.0;
+        let mut engine =
+            Engine::with_config(42, cfg.clone(), crate::config::default_models()).unwrap();
+        assert!(engine.walls.is_empty() && engine.mobs.is_empty());
+        while !engine.is_ended() {
+            engine.step(&vec![None; 5]);
+        }
+        assert_eq!(engine.tick, 1200);
+        assert!(engine.players.iter().all(|player| player.alive));
+        let result: serde_json::Value = serde_json::from_str(&engine.results_json()).unwrap();
+        let replay: serde_json::Value = serde_json::from_str(&engine.replay_json()).unwrap();
+        assert_eq!(
+            result["effective_config"],
+            serde_json::to_value(cfg).unwrap()
+        );
+        assert_eq!(result["effective_config"], replay["effective_config"]);
+        assert_eq!(result["rules_version"], "agentrix-rules-v1");
+    }
+
+    #[test]
+    fn missing_action_keeps_moving_without_firing() {
+        let mut engine = Engine::new(42, 20.0, crate::config::default_models());
+        engine.walls.clear();
+        engine.mobs.clear();
+        engine.players[0].pos = Vec2::new(600.0, 375.0);
+        engine.players[0].facing = 0.0;
+        engine.players[0].cooldown = 0.0;
+        let before = engine.players[0].pos;
+        engine.step(&vec![None; 5]);
+        assert!(engine.players[0].pos.x > before.x);
+        assert_eq!(engine.players[0].facing, 0.0);
+        assert!(engine.bullets.is_empty());
+    }
+
+    #[test]
+    fn result_replay_and_winner_share_the_canonical_ranking() {
+        let mut engine = Engine::new(42, 20.0, crate::config::default_models());
+        engine.tick = 60;
+        for i in 1..5 {
+            engine.players[i].alive = false;
+            engine.players[i].death_tick = Some((50 - i) as u32);
+        }
+        engine.players[1].kills = 4;
+        engine.players[1].kill_times = vec![1, 2, 3, 4];
+        let result: serde_json::Value = serde_json::from_str(&engine.results_json()).unwrap();
+        let replay: serde_json::Value = serde_json::from_str(&engine.replay_json()).unwrap();
+        assert_eq!(result["ranking"], replay["ranking"]);
+        assert_eq!(result["score_version"], replay["score_version"]);
+        assert_eq!(result["engine_version"], replay["engine_version"]);
+        assert_eq!(result["winner_id"], 1);
+        assert_eq!(result["ranking"][0]["place"], 1);
+        assert_eq!(result["ranking"][0]["survival_place"], 2);
+        assert_eq!(result["winner"], engine.players[1].name);
+    }
 }
