@@ -48,13 +48,14 @@ services:
       ARBITER_PATH: "/usr/local/bin/agentrix-arbiter"
       BOTS_DIR: "/var/agentrix/bots"
       REPLAYS_DIR: "/var/agentrix/replays"
+      KITS_DIR: "/opt/agentrix/kits"
       AUTO_MATCHMAKER: "false"
       MATCH_INTERVAL_SECONDS: 30
       JWT_SECRET: "${JWT_SECRET:?Set a private random JWT secret of at least 32 bytes}"
       BOOTSTRAP_ADMIN_USERNAME: "${BOOTSTRAP_ADMIN_USERNAME:-}"
       BOOTSTRAP_ADMIN_EMAIL: "${BOOTSTRAP_ADMIN_EMAIL:-}"
       BOOTSTRAP_ADMIN_PASSWORD: "${BOOTSTRAP_ADMIN_PASSWORD:-}"
-      AGENTRIX_DEV_MODE: "${AGENTRIX_DEV_MODE:-true}"
+      AGENTRIX_DEV_MODE: "${AGENTRIX_DEV_MODE:-false}"
       AGENTRIX_RUNTIME_SHA256: "${AGENTRIX_RUNTIME_SHA256:-0000000000000000000000000000000000000000000000000000000000000000}"
     ports:
       - "127.0.0.1:8080:8080"

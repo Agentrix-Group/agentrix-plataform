@@ -1,0 +1,7 @@
+{
+  "version": 1,
+  "protocol_version": 1,
+  "name": "MyStarterBot",
+  "runtime": "python-standard",
+  "entrypoint": "python3 agent.py"
+}

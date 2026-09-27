@@ -49,7 +49,7 @@ func fixtureAPI(t *testing.T) (*Server, context.Context, int, int, []int) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { pool.Close(); _, _ = base.Exec(ctx, "DROP SCHEMA "+schema+" CASCADE"); base.Close() })
-	for _, file := range []string{"000001_init_schema.up.sql", "000002_match_leases.up.sql", "000003_arena_freeze.up.sql", "000004_package_integrity.up.sql", "000005_tournament_rounds.up.sql", "000006_rules_snapshot.up.sql", "000007_replay_path_index.up.sql", "000008_runtime_provenance.up.sql"} {
+	for _, file := range []string{"000001_init_schema.up.sql", "000002_match_leases.up.sql", "000003_arena_freeze.up.sql", "000004_package_integrity.up.sql", "000005_tournament_rounds.up.sql", "000006_rules_snapshot.up.sql", "000007_replay_path_index.up.sql", "000008_runtime_provenance.up.sql", "000009_contest_phases.up.sql"} {
 		data, err := os.ReadFile(filepath.Join("../../migrations", file))
 		if err != nil {
 			t.Fatal(err)

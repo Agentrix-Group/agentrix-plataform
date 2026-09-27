@@ -1,0 +1,35 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "agentrix-training"
+version = "0.2.0"
+description = "Agentrix AI Competitive Training SDK: Gymnasium/PettingZoo environments, feature encoders, baselines, evaluator and submission packager"
+readme = "README.md"
+requires-python = ">=3.10"
+authors = [
+    { name = "Agentrix Platform Team" }
+]
+dependencies = [
+    "numpy>=1.21.0",
+]
+
+[project.optional-dependencies]
+gym = [
+    "gymnasium>=1.0.0",
+    "pettingzoo>=1.24.0",
+]
+ml = [
+    "onnx>=1.15.0",
+    "onnxruntime>=1.16.0",
+]
+
+[project.scripts]
+agentrix-eval = "agentrix_training.evaluate:main"
+agentrix-train = "agentrix_training.train:main"
+agentrix-pack = "agentrix_training.pack:main"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["agentrix_training*"]

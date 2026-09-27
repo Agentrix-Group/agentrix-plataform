@@ -16,11 +16,7 @@ const MAX_BOT_LINE_BYTES: usize = 64 * 1024;
 const MAX_BOT_OUTPUT_BYTES: usize = 32 * 1024 * 1024;
 const OUTPUT_LIMIT_MARKER: &str = "__AGENTRIX_OUTPUT_LIMIT__";
 
-#[derive(Clone, Copy, Debug, Default)]
-pub struct Action {
-    pub angle: f32,
-    pub shoot: bool,
-}
+pub use crate::model::Action;
 
 #[derive(Deserialize)]
 struct ActionResponse {

@@ -2,6 +2,12 @@ use crate::config::ModelConfig;
 use crate::geometry::Vec2;
 use serde::{Deserialize, Serialize};
 
+#[derive(Clone, Copy, Debug, Default, Serialize, Deserialize, PartialEq)]
+pub struct Action {
+    pub angle: f32,
+    pub shoot: bool,
+}
+
 #[derive(Clone, Serialize, Deserialize, Debug)]
 pub struct Player {
     pub id: usize,

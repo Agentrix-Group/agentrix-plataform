@@ -329,6 +329,7 @@ pub struct Engine {
     next_bullet_id: u64,
     pub replay_frames: Vec<ReplayFrame>,
     pub replay_overflow: bool,
+    pub record_replay: bool,
     replay_bytes: usize,
     pending_replay_events: Vec<Event>,
     previous_replay_state: Option<ReplayStateSnapshot>,
@@ -364,6 +365,7 @@ impl Engine {
             next_bullet_id: 0,
             replay_frames: vec![],
             replay_overflow: false,
+            record_replay: true,
             replay_bytes: 0,
             pending_replay_events: vec![],
             previous_replay_state: None,
@@ -371,6 +373,11 @@ impl Engine {
 
         engine.reset();
         Ok(engine)
+    }
+
+    pub fn reset_with_seed(&mut self, seed: u32) {
+        self.seed = seed;
+        self.reset();
     }
 
     pub fn reset(&mut self) {
@@ -773,6 +780,11 @@ impl Engine {
                 })
                 .collect(),
         };
+        if !self.record_replay {
+            self.previous_replay_state = Some(snapshot);
+            self.pending_replay_events.clear();
+            return;
+        }
         let is_keyframe = self.previous_replay_state.is_none() || (self.tick - 1) % 60 == 0;
         let (keyframe, delta) = if is_keyframe {
             (Some(snapshot.keyframe()), None)

@@ -7,7 +7,8 @@ import {
   Team,
   AuditLog,
   SystemStatus,
-  ReplayData
+  ReplayData,
+  ArenaKitManifest
 } from '../types';
 
 import { normalizeReplay } from './replay';
@@ -92,6 +93,10 @@ class ApiClient {
 
   async getArena(id: number): Promise<Arena> {
     return this.request<Arena>(`/arenas/${id}`);
+  }
+
+  async getArenaKit(id: number): Promise<ArenaKitManifest> {
+    return this.request<ArenaKitManifest>(`/arenas/${id}/kit`);
   }
 
   // Ladder

@@ -11,3 +11,9 @@ var/agentrix/
 *.log
 .DS_Store
 *.env.local
+.env
+.env.*.local
+.venv/
+venv/
+*.egg-info/
+.pytest_cache/
