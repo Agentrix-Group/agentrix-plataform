@@ -91,6 +91,7 @@ func (s *Server) setupRoutes() {
 		r.Get("/arenas", s.handleListArenas)
 		r.Get("/arenas/{id}", s.handleGetArena)
 		r.Post("/arenas/{id}/freeze", auth.RequireAdmin(s.handleFreezeArena))
+		r.Post("/arenas/{id}/phase", auth.RequireAdmin(s.handleSetArenaPhase))
 		r.Post("/arenas/{id}/rounds", auth.RequireAdmin(s.handleScheduleRound))
 
 		// Ladder / Standings
@@ -209,7 +210,8 @@ func (s *Server) handleMe(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleListArenas(w http.ResponseWriter, r *http.Request) {
 	rows, err := s.pool.Query(r.Context(), `
 		SELECT id, slug, name, description, game_type, max_players, max_ticks, config_json, is_active, created_at,
-		 EXISTS(SELECT 1 FROM arena_freezes f WHERE f.arena_id=arenas.id)
+		 EXISTS(SELECT 1 FROM arena_freezes f WHERE f.arena_id=arenas.id),
+		 COALESCE(phase, 'warmup')
 		FROM arenas
 		ORDER BY id ASC
 	`)
@@ -223,7 +225,7 @@ func (s *Server) handleListArenas(w http.ResponseWriter, r *http.Request) {
 	for rows.Next() {
 		var a models.Arena
 		var cfgBytes []byte
-		if err := rows.Scan(&a.ID, &a.Slug, &a.Name, &a.Description, &a.GameType, &a.MaxPlayers, &a.MaxTicks, &cfgBytes, &a.IsActive, &a.CreatedAt, &a.Frozen); err == nil {
+		if err := rows.Scan(&a.ID, &a.Slug, &a.Name, &a.Description, &a.GameType, &a.MaxPlayers, &a.MaxTicks, &cfgBytes, &a.IsActive, &a.CreatedAt, &a.Frozen, &a.Phase); err == nil {
 			_ = json.Unmarshal(cfgBytes, &a.ConfigJSON)
 			arenas = append(arenas, a)
 		}
@@ -240,9 +242,10 @@ func (s *Server) handleGetArena(w http.ResponseWriter, r *http.Request) {
 	var cfgBytes []byte
 	err := s.pool.QueryRow(r.Context(), `
 		SELECT id, slug, name, description, game_type, max_players, max_ticks, config_json, is_active, created_at,
-		 EXISTS(SELECT 1 FROM arena_freezes f WHERE f.arena_id=arenas.id)
+		 EXISTS(SELECT 1 FROM arena_freezes f WHERE f.arena_id=arenas.id),
+		 COALESCE(phase, 'warmup')
 		FROM arenas WHERE id = $1
-	`, id).Scan(&a.ID, &a.Slug, &a.Name, &a.Description, &a.GameType, &a.MaxPlayers, &a.MaxTicks, &cfgBytes, &a.IsActive, &a.CreatedAt, &a.Frozen)
+	`, id).Scan(&a.ID, &a.Slug, &a.Name, &a.Description, &a.GameType, &a.MaxPlayers, &a.MaxTicks, &cfgBytes, &a.IsActive, &a.CreatedAt, &a.Frozen, &a.Phase)
 	if err != nil {
 		writeError(w, http.StatusNotFound, "arena not found")
 		return

@@ -167,6 +167,7 @@ func applyAllMigrations(ctx context.Context, pool *db.Pool) error {
 		"000006_rules_snapshot.up.sql",
 		"000007_replay_path_index.up.sql",
 		"000008_runtime_provenance.up.sql",
+		"000009_contest_phases.up.sql",
 	}
 	for _, file := range files {
 		path := filepath.Join(dir, file)

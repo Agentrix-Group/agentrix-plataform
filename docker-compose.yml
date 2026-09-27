@@ -24,6 +24,7 @@ services:
       - ./backend/migrations/000006_rules_snapshot.up.sql:/docker-entrypoint-initdb.d/06_rules_snapshot.sql:ro
       - ./backend/migrations/000007_replay_path_index.up.sql:/docker-entrypoint-initdb.d/07_replay_path_index.sql:ro
       - ./backend/migrations/000008_runtime_provenance.up.sql:/docker-entrypoint-initdb.d/08_runtime_provenance.sql:ro
+      - ./backend/migrations/000009_contest_phases.up.sql:/docker-entrypoint-initdb.d/09_contest_phases.sql:ro
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U postgres -d agentrix_platform"]
       interval: 5s
@@ -47,7 +48,7 @@ services:
       ARBITER_PATH: "/usr/local/bin/agentrix-arbiter"
       BOTS_DIR: "/var/agentrix/bots"
       REPLAYS_DIR: "/var/agentrix/replays"
-      AUTO_MATCHMAKER: "true"
+      AUTO_MATCHMAKER: "false"
       MATCH_INTERVAL_SECONDS: 30
       JWT_SECRET: "${JWT_SECRET:?Set a private random JWT secret of at least 32 bytes}"
       BOOTSTRAP_ADMIN_USERNAME: "${BOOTSTRAP_ADMIN_USERNAME:-}"

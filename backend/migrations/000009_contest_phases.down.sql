@@ -1,0 +1,1 @@
+ALTER TABLE arenas DROP COLUMN IF EXISTS phase;

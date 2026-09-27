@@ -99,6 +99,10 @@ class ApiClient {
 	  return this.request(`/arenas/${id}/freeze`, { method: 'POST', body: JSON.stringify({ frozen }) });
 	}
 
+	async setArenaPhase(id: number, phase: string): Promise<{ arena_id: number; phase: string; frozen: boolean }> {
+	  return this.request(`/arenas/${id}/phase`, { method: 'POST', body: JSON.stringify({ phase }) });
+	}
+
 	async scheduleRound(arenaId: number, idempotencyKey: string, agentVersionIds: number[], seed?: number): Promise<{ id: number; total_matches: number; format_version: string }> {
 	  return this.request(`/arenas/${arenaId}/rounds`, {
 	    method: 'POST',

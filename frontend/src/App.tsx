@@ -189,7 +189,24 @@ export const App: React.FC = () => {
           />
         )}
 
-        {currentTab === 'arenas' && <ArenasPage arenas={arenas} canFreeze={user?.role === 'admin'} onFreeze={async (id, frozen) => { await api.setArenaFreeze(id, frozen); await refreshData(); }} />}
+        {currentTab === 'arenas' && (
+          <ArenasPage
+            arenas={arenas}
+            canFreeze={user?.role === 'admin'}
+            onFreeze={async (id, frozen) => {
+              await api.setArenaFreeze(id, frozen);
+              await refreshData();
+            }}
+            onSetPhase={async (id, phase) => {
+              await api.setArenaPhase(id, phase);
+              await refreshData();
+            }}
+            onOpenTestMatch={(arenaId) => {
+              setSelectedArenaId(arenaId);
+              setIsTriggerMatchOpen(true);
+            }}
+          />
+        )}
 
         {currentTab === 'teams' && <TeamsPage teams={teams} />}
 

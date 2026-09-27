@@ -16,6 +16,7 @@ export interface Team {
 
 export interface Arena {
 	 frozen: boolean;
+	 phase?: 'warmup' | 'running' | 'frozen' | 'finished';
   id: number;
   slug: string;
   name: string;

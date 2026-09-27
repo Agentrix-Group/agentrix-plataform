@@ -43,6 +43,7 @@ type Arena struct {
 	ConfigJSON  map[string]interface{} `json:"config_json"`
 	IsActive    bool                   `json:"is_active"`
 	Frozen      bool                   `json:"frozen"`
+	Phase       string                 `json:"phase"` // "warmup", "running", "frozen", "finished"
 	CreatedAt   time.Time              `json:"created_at"`
 }
 
