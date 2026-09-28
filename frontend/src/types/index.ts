@@ -230,3 +230,5 @@ export interface ArenaKitManifest {
   rules: Record<string, any>;
   starter_kit: StarterKitInfo;
 }
+
+export * from './theme';

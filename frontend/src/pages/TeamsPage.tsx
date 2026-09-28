@@ -1,21 +1,10 @@
 import React from 'react';
 import { Users, Building, Calendar, School, Award } from 'lucide-react';
-import { Team } from '../types';
+import { Team, getDeterministicColor } from '../types';
 
 interface TeamsPageProps {
   teams: Team[];
 }
-
-const BALLOON_COLORS = [
-  'bg-blue-600 text-white',
-  'bg-emerald-600 text-white',
-  'bg-purple-600 text-white',
-  'bg-amber-500 text-white',
-  'bg-rose-600 text-white',
-  'bg-cyan-600 text-white',
-  'bg-orange-500 text-white',
-  'bg-indigo-600 text-white',
-];
 
 export const TeamsPage: React.FC<TeamsPageProps> = ({ teams }) => {
   return (
@@ -75,8 +64,8 @@ export const TeamsPage: React.FC<TeamsPageProps> = ({ teams }) => {
                   </td>
                 </tr>
               ) : (
-                teams.map((t, idx) => {
-                  const balloonColor = BALLOON_COLORS[idx % BALLOON_COLORS.length];
+                teams.map((t) => {
+                  const teamColor = getDeterministicColor(t.name);
                   return (
                     <tr key={t.id} className="hover:bg-blue-50/70 transition-colors">
                       <td className="text-center font-mono font-bold text-slate-500 text-xs">
@@ -85,7 +74,7 @@ export const TeamsPage: React.FC<TeamsPageProps> = ({ teams }) => {
                       <td>
                         <div className="flex items-center gap-2.5">
                           <span
-                            className={`w-7 h-7 rounded-full text-xs font-black flex items-center justify-center shadow-xs shrink-0 ${balloonColor}`}
+                            className={`w-7 h-7 rounded-full text-xs font-black flex items-center justify-center shadow-xs shrink-0 ${teamColor.bgClass}`}
                           >
                             {t.name.charAt(0).toUpperCase()}
                           </span>

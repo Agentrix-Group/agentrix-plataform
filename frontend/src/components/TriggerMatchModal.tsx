@@ -1,7 +1,7 @@
 import React, { useState } from 'react';
 import { X, Play, Shuffle, CheckCircle2, AlertCircle, Loader2, Swords, Bot } from 'lucide-react';
 import { api } from '../api/client';
-import { Arena, AgentVersion } from '../types';
+import { Arena, AgentVersion, getDeterministicColor } from '../types';
 
 interface TriggerMatchModalProps {
   isOpen: boolean;
@@ -11,16 +11,6 @@ interface TriggerMatchModalProps {
   agents: AgentVersion[];
   defaultArenaId: number;
 }
-
-const BALLOON_COLORS = [
-  'bg-blue-600 text-white',
-  'bg-emerald-600 text-white',
-  'bg-purple-600 text-white',
-  'bg-amber-500 text-white',
-  'bg-rose-600 text-white',
-  'bg-cyan-600 text-white',
-  'bg-indigo-600 text-white',
-];
 
 export const TriggerMatchModal: React.FC<TriggerMatchModalProps> = ({
   isOpen,
@@ -174,9 +164,9 @@ export const TriggerMatchModal: React.FC<TriggerMatchModalProps> = ({
               {arenaAgents.length === 0 ? (
                 <div className="p-6 text-center text-slate-400 font-medium">No active bots found in this arena</div>
               ) : (
-                arenaAgents.map((agent, idx) => {
+                arenaAgents.map((agent) => {
                   const isChecked = selectedAgentIds.includes(agent.id);
-                  const balloonColor = BALLOON_COLORS[idx % BALLOON_COLORS.length];
+                  const entityColor = getDeterministicColor(agent.name);
                   return (
                     <div
                       key={agent.id}
@@ -193,7 +183,7 @@ export const TriggerMatchModal: React.FC<TriggerMatchModalProps> = ({
                           className="rounded border-slate-300 text-blue-600 focus:ring-blue-500"
                         />
                         <span
-                          className={`w-5 h-5 rounded-full text-[10px] font-black flex items-center justify-center shadow-xs shrink-0 ${balloonColor}`}
+                          className={`w-5 h-5 rounded-full text-[10px] font-black flex items-center justify-center shadow-xs shrink-0 ${entityColor.bgClass}`}
                         >
                           {agent.name.charAt(0).toUpperCase()}
                         </span>
