@@ -1,3 +1,4 @@
+import { getSeatColor } from '../types/index.ts';
 import type { ReplayData, ReplayTickFrame } from '../types/index.ts';
 
 // Render recorded geometry/rules, not the arena's current configuration.
@@ -24,10 +25,11 @@ export function drawReplayLayers(ctx: CanvasRenderingContext2D, replay: ReplayDa
   }
   if (rules?.show_vision === true) {
     ctx.setLineDash([3, 3]);
-    ctx.strokeStyle = '#38bdf866';
     ctx.lineWidth = 1;
     for (const unit of frame.units) {
       if (!unit.alive || !Number.isFinite(unit.vision) || (unit.vision ?? 0) <= 0) continue;
+      const unitColor = getSeatColor(unit.seat).hex;
+      ctx.strokeStyle = unitColor + '55';
       ctx.beginPath();
       ctx.ellipse(unit.x * sx, unit.y * sy, unit.vision! * sx, unit.vision! * sy, 0, 0, Math.PI * 2);
       ctx.stroke();

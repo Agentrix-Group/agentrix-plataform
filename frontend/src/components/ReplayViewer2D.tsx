@@ -11,22 +11,15 @@ import {
   VolumeX,
   Maximize2
 } from 'lucide-react';
-import { ReplayData, ReplayTickFrame } from '../types';
+import { ReplayData, ReplayTickFrame, MatchParticipant, getSeatColor, SEAT_COLORS } from '../types';
 
 interface ReplayViewer2DProps {
   replayData: ReplayData;
   matchId: number;
+  participants?: MatchParticipant[];
 }
 
-const SEAT_COLORS = [
-  '#38bdf8', // Seat 0: Sky Blue
-  '#34d399', // Seat 1: Emerald
-  '#fbbf24', // Seat 2: Amber
-  '#c084fc', // Seat 3: Purple
-  '#fb7185', // Seat 4: Rose
-];
-
-export const ReplayViewer2D: React.FC<ReplayViewer2DProps> = ({ replayData, matchId }) => {
+export const ReplayViewer2D: React.FC<ReplayViewer2DProps> = ({ replayData, matchId, participants }) => {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const containerRef = useRef<HTMLDivElement | null>(null);
 
@@ -123,7 +116,7 @@ export const ReplayViewer2D: React.FC<ReplayViewer2DProps> = ({ replayData, matc
 
           const ux = u.x * scaleX;
           const uy = u.y * scaleY;
-          const seatColor = SEAT_COLORS[u.seat % SEAT_COLORS.length];
+          const seatColor = getSeatColor(u.seat).hex;
 
           // Bot Body Circle
           ctx.save();
@@ -160,19 +153,26 @@ export const ReplayViewer2D: React.FC<ReplayViewer2DProps> = ({ replayData, matc
           ctx.fillStyle = hpRatio > 0.5 ? '#10b981' : hpRatio > 0.25 ? '#f59e0b' : '#ef4444';
           ctx.fillRect(barX, barY, barWidth * hpRatio, barHeight);
 
-          // Seat Number / Label
+          // Seat Number / Bot Name Label
+          const participant = participants?.find((p) => p.seat === u.seat);
+          const botLabel = participant?.agent_name
+            ? (participant.agent_name.length > 9 ? participant.agent_name.slice(0, 8) + '…' : participant.agent_name)
+            : `P${u.seat}`;
+
           ctx.fillStyle = '#f8fafc';
-          ctx.font = '9px JetBrains Mono';
+          ctx.font = '9px JetBrains Mono, monospace';
           ctx.textAlign = 'center';
-          ctx.fillText(`P${u.seat}`, ux, uy + 20);
+          ctx.fillText(botLabel, ux, uy + 20);
         }
       }
 
       // 7. Update Kill Feed
       setKillFeed(frame.kill_feed ?? frame.events?.slice(-6) ?? []);
     },
-    [frames, replayData]
+    [frames, replayData, participants]
   );
+
+  const tickHz = replayData.arena?.tick_hz || 60;
 
   // Playback Loop
   useEffect(() => {
@@ -189,8 +189,8 @@ export const ReplayViewer2D: React.FC<ReplayViewer2DProps> = ({ replayData, matc
       const deltaMs = now - lastTimeRef.current;
       lastTimeRef.current = now;
 
-      // 50ms per tick at 1x speed
-      const tickDuration = 50 / speed;
+      // Real-time tick duration based on engine tick_hz (e.g. 60 Hz = ~16.67ms)
+      const tickDuration = (1000 / tickHz) / speed;
       tickAccRef.current += deltaMs;
 
       while (tickAccRef.current >= tickDuration) {
@@ -214,7 +214,7 @@ export const ReplayViewer2D: React.FC<ReplayViewer2DProps> = ({ replayData, matc
         cancelAnimationFrame(animFrameRef.current);
       }
     };
-  }, [isPlaying, speed, totalTicks]);
+  }, [isPlaying, speed, totalTicks, tickHz]);
 
   // Re-render when currentTick changes
   useEffect(() => {
@@ -262,19 +262,31 @@ export const ReplayViewer2D: React.FC<ReplayViewer2DProps> = ({ replayData, matc
 
           {/* Seat Color Legends */}
           <div className="hidden sm:flex items-center gap-3 text-xs font-mono font-bold">
-            {SEAT_COLORS.map((color, idx) => (
-              <div key={idx} className="flex items-center gap-1.5 px-2 py-0.5 rounded-md bg-white border border-slate-200 shadow-2xs">
-                <span className="w-2.5 h-2.5 rounded-full shadow-xs" style={{ backgroundColor: color }} />
-                <span className="text-slate-700">Seat {idx}</span>
-              </div>
-            ))}
+            {participants && participants.length > 0 ? (
+              participants.map((p) => {
+                const theme = getSeatColor(p.seat);
+                return (
+                  <div key={p.seat} className="flex items-center gap-1.5 px-2 py-0.5 rounded-md bg-white border border-slate-200 shadow-2xs">
+                    <span className="w-2.5 h-2.5 rounded-full shadow-xs" style={{ backgroundColor: theme.hex }} />
+                    <span className="text-slate-700 font-semibold">{p.agent_name || `Seat ${p.seat}`}</span>
+                  </div>
+                );
+              })
+            ) : (
+              SEAT_COLORS.map((theme, idx) => (
+                <div key={idx} className="flex items-center gap-1.5 px-2 py-0.5 rounded-md bg-white border border-slate-200 shadow-2xs">
+                  <span className="w-2.5 h-2.5 rounded-full shadow-xs" style={{ backgroundColor: theme.hex }} />
+                  <span className="text-slate-700">Seat {idx}</span>
+                </div>
+              ))
+            )}
           </div>
         </div>
 
         {/* Current Tick & Time indicator */}
         <div className="font-mono text-xs font-bold text-slate-600 bg-white border border-slate-200 px-3 py-1 rounded-lg shadow-2xs">
           Tick: <span className="text-blue-600 font-extrabold">{currentTick}</span> / {totalTicks}
-          <span className="text-slate-400 font-medium ml-1.5">({((currentTick * 50) / 1000).toFixed(1)}s)</span>
+          <span className="text-slate-400 font-medium ml-1.5">({(currentTick / tickHz).toFixed(1)}s)</span>
         </div>
       </div>
 
@@ -305,7 +317,12 @@ export const ReplayViewer2D: React.FC<ReplayViewer2DProps> = ({ replayData, matc
       {/* Live Participant Status HUD Strip */}
       <div className="px-5 py-3 bg-slate-50 border-t border-b border-slate-200">
         <div className="grid grid-cols-2 sm:grid-cols-5 gap-2.5">
-          {SEAT_COLORS.map((color, seatIdx) => {
+          {(participants && participants.length > 0
+            ? [...participants].sort((a, b) => a.seat - b.seat)
+            : SEAT_COLORS.map((_, idx) => ({ seat: idx, agent_name: `Seat ${idx}` }))
+          ).map((p) => {
+            const seatIdx = p.seat;
+            const theme = getSeatColor(seatIdx);
             const unit = currentUnits.find((u) => u.seat === seatIdx);
             const isAlive = unit ? unit.alive : true;
             const maxHp = unit?.max_hp || 100;
@@ -322,11 +339,14 @@ export const ReplayViewer2D: React.FC<ReplayViewer2DProps> = ({ replayData, matc
                 }`}
               >
                 <div className="flex items-center justify-between text-xs font-mono mb-1.5">
-                  <div className="flex items-center gap-1.5">
-                    <span className="w-2.5 h-2.5 rounded-full" style={{ backgroundColor: color }} />
-                    <span className="font-extrabold text-slate-800">Seat {seatIdx}</span>
+                  <div className="flex items-center gap-1.5 min-w-0">
+                    <span className="w-2.5 h-2.5 rounded-full shrink-0" style={{ backgroundColor: theme.hex }} />
+                    <span className="font-extrabold text-slate-800 truncate" title={p.agent_name}>
+                      {p.agent_name}
+                    </span>
+                    <span className="text-[10px] text-slate-400 font-bold shrink-0">P{seatIdx}</span>
                   </div>
-                  <span className={`text-[10px] font-bold px-1.5 py-0.2 rounded ${
+                  <span className={`text-[10px] font-bold px-1.5 py-0.2 rounded shrink-0 ${
                     isAlive ? 'bg-emerald-50 text-emerald-700' : 'bg-rose-50 text-rose-700 line-through'
                   }`}>
                     {isAlive ? `${Math.round(hp)} HP` : 'DEAD'}

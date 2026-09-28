@@ -12,7 +12,7 @@ import {
   Sparkles,
   Bot
 } from 'lucide-react';
-import { LadderEntry, Arena } from '../types';
+import { LadderEntry, Arena, getDeterministicColor } from '../types';
 import { StatusBadge } from '../components/StatusBadge';
 
 interface LeaderboardPageProps {
@@ -172,15 +172,7 @@ export const LeaderboardPage: React.FC<LeaderboardPageProps> = ({
                   const isTop2 = rank === 2;
                   const isTop3 = rank === 3;
 
-                  // Balloon colors for teams
-                  const balloonColors = [
-                    'bg-blue-100 text-blue-700 border-blue-300',
-                    'bg-emerald-100 text-emerald-700 border-emerald-300',
-                    'bg-amber-100 text-amber-700 border-amber-300',
-                    'bg-purple-100 text-purple-700 border-purple-300',
-                    'bg-rose-100 text-rose-700 border-rose-300',
-                  ];
-                  const balloonClass = balloonColors[idx % balloonColors.length];
+                  const teamColor = getDeterministicColor(entry.team_name);
 
                   return (
                     <tr key={entry.id} className="group">
@@ -215,7 +207,7 @@ export const LeaderboardPage: React.FC<LeaderboardPageProps> = ({
                       {/* Team Name with Balloon / Team Avatar */}
                       <td className="text-slate-700">
                         <div className="flex items-center gap-2">
-                          <div className={`w-6 h-6 rounded-md flex items-center justify-center font-bold text-xs border ${balloonClass}`}>
+                          <div className={`w-6 h-6 rounded-md flex items-center justify-center font-bold text-xs border ${teamColor.badgeClass}`}>
                             {entry.team_name.charAt(0)}
                           </div>
                           <span className="font-bold text-slate-800">{entry.team_name}</span>

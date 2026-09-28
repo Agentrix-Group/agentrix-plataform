@@ -13,7 +13,7 @@ import {
   Cpu,
   Layers
 } from 'lucide-react';
-import { AgentVersion, Arena, User } from '../types';
+import { AgentVersion, Arena, User, getDeterministicColor } from '../types';
 import { StatusBadge } from '../components/StatusBadge';
 import { api } from '../api/client';
 
@@ -25,16 +25,6 @@ interface BotsPageProps {
   onRefresh: () => void;
   onOpenUpload: () => void;
 }
-
-const BALLOON_COLORS = [
-  'bg-blue-600 text-white',
-  'bg-emerald-600 text-white',
-  'bg-purple-600 text-white',
-  'bg-amber-500 text-white',
-  'bg-rose-600 text-white',
-  'bg-cyan-600 text-white',
-  'bg-indigo-600 text-white',
-];
 
 export const BotsPage: React.FC<BotsPageProps> = ({
   agents,
@@ -196,8 +186,8 @@ export const BotsPage: React.FC<BotsPageProps> = ({
                   </td>
                 </tr>
               ) : (
-                agents.map((agent, idx) => {
-                  const balloonColor = BALLOON_COLORS[idx % BALLOON_COLORS.length];
+                agents.map((agent) => {
+                  const botColor = getDeterministicColor(agent.name);
                   return (
                     <tr key={agent.id} className="hover:bg-blue-50/70 transition-colors">
                       <td className="text-center font-mono font-bold text-slate-500 text-xs">
@@ -206,7 +196,7 @@ export const BotsPage: React.FC<BotsPageProps> = ({
                       <td>
                         <div className="flex items-center gap-2">
                           <span
-                            className={`w-6 h-6 rounded-full text-xs font-black flex items-center justify-center shadow-xs shrink-0 ${balloonColor}`}
+                            className={`w-6 h-6 rounded-full text-xs font-black flex items-center justify-center shadow-xs shrink-0 ${botColor.bgClass}`}
                           >
                             {agent.name.charAt(0).toUpperCase()}
                           </span>

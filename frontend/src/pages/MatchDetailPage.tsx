@@ -14,7 +14,7 @@ import {
   Hash
 } from 'lucide-react';
 import { api } from '../api/client';
-import { Match, ReplayData } from '../types';
+import { Match, ReplayData, getSeatColor } from '../types';
 import { ReplayViewer2D } from '../components/ReplayViewer2D';
 import { StatusBadge } from '../components/StatusBadge';
 
@@ -23,17 +23,6 @@ interface MatchDetailPageProps {
   onBack: () => void;
   onRerun: (matchId: number) => void;
 }
-
-const BALLOON_COLORS = [
-  'bg-red-500 text-white',
-  'bg-blue-600 text-white',
-  'bg-emerald-600 text-white',
-  'bg-amber-500 text-white',
-  'bg-purple-600 text-white',
-  'bg-pink-500 text-white',
-  'bg-cyan-600 text-white',
-  'bg-orange-500 text-white',
-];
 
 export const MatchDetailPage: React.FC<MatchDetailPageProps> = ({ matchId, onBack, onRerun }) => {
   const [match, setMatch] = useState<Match | null>(null);
@@ -133,7 +122,7 @@ export const MatchDetailPage: React.FC<MatchDetailPageProps> = ({ matchId, onBac
               </span>
               <span className="inline-flex items-center gap-1 bg-slate-50 px-2 py-0.5 rounded border border-slate-200">
                 <Timer className="w-3 h-3 text-slate-400" />
-                {match.ticks_played} ticks ({((match.ticks_played * 50) / 1000).toFixed(1)}s)
+                {match.ticks_played} ticks ({((match.ticks_played / (replayData?.arena?.tick_hz || 60))).toFixed(1)}s)
               </span>
               <span className="inline-flex items-center gap-1 bg-slate-50 px-2 py-0.5 rounded border border-slate-200">
                 <Swords className="w-3 h-3 text-slate-400" />
@@ -166,7 +155,7 @@ export const MatchDetailPage: React.FC<MatchDetailPageProps> = ({ matchId, onBac
 
       {/* Main 2D Canvas Replay Player */}
       {replayData ? (
-        <ReplayViewer2D replayData={replayData} matchId={match.id} />
+        <ReplayViewer2D replayData={replayData} matchId={match.id} participants={match.participants} />
       ) : (
         <div className="bg-white border border-slate-200 rounded-xl p-8 text-center text-slate-500 text-xs shadow-sm">
           Replay telemetry frames are not available for this match.
@@ -224,7 +213,7 @@ export const MatchDetailPage: React.FC<MatchDetailPageProps> = ({ matchId, onBac
                     .map((p, idx) => {
                       const isPositive = p.rating_delta > 0;
                       const isNegative = p.rating_delta < 0;
-                      const balloonColor = BALLOON_COLORS[p.seat % BALLOON_COLORS.length];
+                      const seatTheme = getSeatColor(p.seat);
 
                       return (
                         <tr key={p.id} className="hover:bg-blue-50/70 transition-colors">
@@ -254,7 +243,7 @@ export const MatchDetailPage: React.FC<MatchDetailPageProps> = ({ matchId, onBac
                           <td>
                             <div className="flex items-center gap-2">
                               <span
-                                className={`w-5 h-5 rounded-full text-[10px] font-black flex items-center justify-center shadow-xs shrink-0 ${balloonColor}`}
+                                className={`w-5 h-5 rounded-full text-[10px] font-black flex items-center justify-center shadow-xs shrink-0 ${seatTheme.bgClass}`}
                               >
                                 {p.agent_name.charAt(0).toUpperCase()}
                               </span>
