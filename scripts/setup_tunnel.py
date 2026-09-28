@@ -22,8 +22,16 @@ def main():
     os.makedirs(etc_cf_dir, exist_ok=True)
     os.makedirs(user_cf_dir, exist_ok=True)
 
-    # 2. Buscar el archivo de credenciales JSON
-    search_dirs = [user_cf_dir, etc_cf_dir, os.path.expanduser("~/.cloudflared")]
+    # 2. Copiar cert.pem a /etc/cloudflared si existe
+    for d in [user_cf_dir, os.path.expanduser("~/.cloudflared"), "/home/acm/.cloudflared"]:
+        src_cert = os.path.join(d, "cert.pem")
+        if os.path.isfile(src_cert):
+            shutil.copy2(src_cert, os.path.join(etc_cf_dir, "cert.pem"))
+            print(f"✅ Certificado cert.pem copiado a {etc_cf_dir}/cert.pem")
+            break
+
+    # 3. Buscar el archivo de credenciales JSON
+    search_dirs = [user_cf_dir, etc_cf_dir, os.path.expanduser("~/.cloudflared"), "/home/acm/.cloudflared"]
     json_files = []
     for d in search_dirs:
         if os.path.isdir(d):
