@@ -1,0 +1,12 @@
+# Plantilla de configuración para Cloudflare Tunnel con Agentrix Platform
+# Ubicación en el servidor: ~/.cloudflared/config.yml
+
+tunnel: <TUNNEL_ID_GENERADO>
+credentials-file: /home/<USUARIO>/.cloudflared/<TUNNEL_ID_GENERADO>.json
+
+ingress:
+  - hostname: cocorium.online
+    service: http://localhost:3000
+  - hostname: www.cocorium.online
+    service: http://localhost:3000
+  - service: http_status:404
